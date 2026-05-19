@@ -1,4 +1,4 @@
-"""Reusable @kernel physics subroutines for SNAQ-Node-1 Cs experiments.
+"""Reusable @kernel physics subroutines for SNAQ-Node-3 Cs experiments.
 
 All functions take the experiment instance (``exp``) as the first argument
 so they can access device aliases and datasets set up by BaseExperiment.

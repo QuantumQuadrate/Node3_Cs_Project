@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the K10CR1 NDSP server for SNAQ-Node-1 waveplates.
+"""Launch the K10CR1 NDSP server for SNAQ-Node-3 waveplates.
 
 Usage:
   1. Activate ARTIQ environment (conda activate artiq7)

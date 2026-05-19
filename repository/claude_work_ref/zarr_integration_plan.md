@@ -1,4 +1,4 @@
-# Plan: Zarr Integration for SNAQ-Node-1 Data Infrastructure
+# Plan: Zarr Integration for SNAQ-Node-3 Data Infrastructure
 
 ## Context
 

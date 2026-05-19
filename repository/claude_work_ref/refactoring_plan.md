@@ -2,7 +2,7 @@
 
 ## Context
 
-The `useful_codes/` folder contains 17 working Python files for SNAQ-Node-1, a Cesium neutral atom quantum networking experiment running ARTIQ-7 on a Kasli FPGA (192.168.1.130). The code is functional but messy: no `device_db.py`, parameters hardcoded in every file, device declarations copy-pasted across experiments, data saved only to CSV, no monitoring, and no analysis tools. A previous Claude attempt (`experiments_another_claude_attempt_incomplete/`) made good base classes but left feedback unintegrated, HDF5 incomplete, and had a wrong Q-axis in calibration.yaml.
+The `useful_codes/` folder contains 17 working Python files for SNAQ-Node-3, a Cesium neutral atom quantum networking experiment running ARTIQ-7 on a Kasli FPGA (192.168.1.130). The code is functional but messy: no `device_db.py`, parameters hardcoded in every file, device declarations copy-pasted across experiments, data saved only to CSV, no monitoring, and no analysis tools. A previous Claude attempt (`experiments_another_claude_attempt_incomplete/`) made good base classes but left feedback unintegrated, HDF5 incomplete, and had a wrong Q-axis in calibration.yaml.
 
 The goal is to restructure into a clean, modular codebase modeled after the senior labmates' Rb reference repo (`qn_artiq_routines-main`), with proper HDF5 data saving, dashboard-settable parameters, continuous monitoring, calibration management, and good wrappers so each experiment is easily readable and parametrized.
 
@@ -213,7 +213,7 @@ useful_codes/
 - `Feedback and Monitoring and Manual Control/` → `archive/Feedback_and_Manual_Control/`
 - Keep `Csnode_schematic.PNG` at root level for reference.
 
-**1.1** Copy `Artiq7_experiment/device_db.py` → `useful_codes/device_db.py` verbatim (756 lines, verified correct for SNAQ-Node-1 Kasli).
+**1.1** Copy `Artiq7_experiment/device_db.py` → `useful_codes/device_db.py` verbatim (756 lines, verified correct for SNAQ-Node-3 Kasli).
 
 **1.2** Create `config/device_aliases.json`:
 Complete mapping of all 12 DDS channels + TTLs + DAC channels to human-readable names with default frequencies/amplitudes. Includes per-channel metadata (max_amp, feedback_sampler_ch where applicable). All values verified against the latest Z parity experiment (April 2026).

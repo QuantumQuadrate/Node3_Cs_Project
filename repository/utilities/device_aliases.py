@@ -1,4 +1,4 @@
-"""Device alias management for SNAQ-Node-1 Cs experiment.
+"""Device alias management for SNAQ-Node-3 Cs experiment.
 
 Reads config/device_aliases.json and creates human-readable attribute
 aliases on the experiment object, so experiments can use e.g.

@@ -1,4 +1,4 @@
-"""Centralized experiment parameter definitions for SNAQ-Node-1 Cs experiment.
+"""Centralized experiment parameter definitions for SNAQ-Node-3 Cs experiment.
 
 Run this experiment from the ARTIQ dashboard to create or update all
 persistent datasets in dataset_db.pyon. Every parameter is a dashboard

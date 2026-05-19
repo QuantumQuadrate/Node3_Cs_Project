@@ -31,7 +31,7 @@ from utilities.calibration_store import CalibrationStore
 
 
 class BaseExperiment:
-    """Composition-based base for all SNAQ-Node-1 Cs experiments.
+    """Composition-based base for all SNAQ-Node-3 Cs experiments.
 
     Handles device registration, parameter loading, and hardware
     initialization so that experiment classes stay focused on physics.
