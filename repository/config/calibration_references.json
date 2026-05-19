@@ -1,0 +1,76 @@
+{
+    "active_profile": "FORT_loading",
+    "profiles": {
+        "FORT_loading": {
+            "description": "MOT + FORT at loading depth (nominal_trapdepth amplitude)",
+            "calibrated_at": "2026-04-05T14:28:16.492964",
+            "channels": {
+                "MOT_X": {
+                    "ref_voltage": 1.2396240234375,
+                    "sampler_ch": 0,
+                    "dds": "urukul2_ch0"
+                },
+                "MOT_Y": {
+                    "ref_voltage": 0.05828857421875,
+                    "sampler_ch": 1,
+                    "dds": "urukul2_ch1"
+                },
+                "MOT_Z": {
+                    "ref_voltage": 0.55389404296875,
+                    "sampler_ch": 2,
+                    "dds": "urukul2_ch2"
+                },
+                "FORT": {
+                    "ref_voltage": 0.13397216796875,
+                    "sampler_ch": 3,
+                    "dds": "urukul1_ch1"
+                },
+                "excitation": {
+                    "ref_voltage": 1.2,
+                    "sampler_ch": 4,
+                    "dds": "urukul1_ch2"
+                }
+            }
+        },
+        "low_FORT": {
+            "description": "MOT + FORT at low trap depth for science (parity, MW scan)",
+            "calibrated_at": "2026-04-04T00:00:00",
+            "channels": {
+                "MOT_X": {
+                    "ref_voltage": 1.26556396484375,
+                    "sampler_ch": 0,
+                    "dds": "urukul2_ch0"
+                },
+                "MOT_Y": {
+                    "ref_voltage": 0.0616455078125,
+                    "sampler_ch": 1,
+                    "dds": "urukul2_ch1"
+                },
+                "MOT_Z": {
+                    "ref_voltage": 0.56365966796875,
+                    "sampler_ch": 2,
+                    "dds": "urukul2_ch2"
+                },
+                "FORT": {
+                    "ref_voltage": 0.036,
+                    "sampler_ch": 3,
+                    "dds": "urukul1_ch1"
+                },
+                "excitation": {
+                    "ref_voltage": 1.2,
+                    "sampler_ch": 4,
+                    "dds": "urukul1_ch2"
+                }
+            }
+        },
+        "blowaway": {
+            "description": "References during blowaway phase (reduced FORT)",
+            "calibrated_at": null,
+            "channels": {
+                "FORT": {
+                    "ref_voltage": -1.0
+                }
+            }
+        }
+    }
+}

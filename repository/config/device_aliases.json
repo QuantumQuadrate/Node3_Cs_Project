@@ -1,0 +1,131 @@
+{
+    "_note": "Hardware channel mapping only. All runtime frequencies and amplitudes come from ExperimentVariables datasets, not from this file.",
+
+    "dds_aliases": {
+        "dds_mw_IF": {
+            "device": "urukul0_ch0",
+            "cpld": "urukul0_cpld",
+            "description": "Microwave IF",
+            "phase_mode": "continuous",
+            "dataset_freq": "f_mw_IF",
+            "dataset_amp": "amp_mw_IF"
+        },
+        "dds_cooling_DP": {
+            "device": "urukul0_ch1",
+            "cpld": "urukul0_cpld",
+            "description": "Cooling AOM double-pass. Frequency varies by phase: MOT(112MHz), compress(120MHz), PGC(128MHz), imaging(120MHz), blowaway(99MHz). See ExperimentVariables for current values.",
+            "dataset_freq": "f_cooling_DP_idle",
+            "dataset_amp": "amp_cooling_DP_idle"
+        },
+        "dds_repump": {
+            "device": "urukul0_ch2",
+            "cpld": "urukul0_cpld",
+            "description": "Repump AOM",
+            "dataset_freq": "f_repump",
+            "dataset_amp": "amp_repump"
+        },
+        "dds_D1_pump": {
+            "device": "urukul0_ch3",
+            "cpld": "urukul0_cpld",
+            "description": "D1 pump first AOM",
+            "dataset_freq": "f_D1_pump",
+            "dataset_amp": "amp_D1_pump"
+        },
+        "dds_RF": {
+            "device": "urukul1_ch0",
+            "cpld": "urukul1_cpld",
+            "description": "RF antenna for two-photon transitions",
+            "phase_mode": "absolute",
+            "dataset_freq": "f_RF",
+            "dataset_amp": "amp_RF"
+        },
+        "dds_FORT": {
+            "device": "urukul1_ch1",
+            "cpld": "urukul1_cpld",
+            "description": "Trap AOM @1064nm",
+            "feedback": {"sampler_ch": 3, "max_amp": 0.25},
+            "dataset_freq": "f_FORT",
+            "dataset_amp": "nominal_trapdepth"
+        },
+        "dds_excitation": {
+            "device": "urukul1_ch2",
+            "cpld": "urukul1_cpld",
+            "description": "D1 on-off AOM R, Excitation",
+            "feedback": {"sampler_ch": 4, "max_amp": 0.5},
+            "dataset_freq": "f_excitation_idle",
+            "dataset_amp": "amp_excitation_idle"
+        },
+        "dds_D1_onoff_L": {
+            "device": "urukul1_ch3",
+            "cpld": "urukul1_cpld",
+            "description": "D1 on-off AOM L, PGC beam",
+            "dataset_freq": "f_D1_onoff_L",
+            "dataset_amp": "amp_D1_onoff_L"
+        },
+        "dds_MOT_X": {
+            "device": "urukul2_ch0",
+            "cpld": "urukul2_cpld",
+            "description": "MOT cooling X fiber AOM",
+            "feedback": {"sampler_ch": 0, "max_amp": 0.17},
+            "dataset_freq": "f_MOT_X",
+            "dataset_amp": "amp_MOT_X"
+        },
+        "dds_MOT_Y": {
+            "device": "urukul2_ch1",
+            "cpld": "urukul2_cpld",
+            "description": "MOT cooling Y fiber AOM",
+            "feedback": {"sampler_ch": 1, "max_amp": 0.17},
+            "dataset_freq": "f_MOT_Y",
+            "dataset_amp": "amp_MOT_Y"
+        },
+        "dds_MOT_Z": {
+            "device": "urukul2_ch2",
+            "cpld": "urukul2_cpld",
+            "description": "MOT cooling Z fiber AOM",
+            "feedback": {"sampler_ch": 2, "max_amp": 0.17},
+            "dataset_freq": "f_MOT_Z",
+            "dataset_amp": "amp_MOT_Z"
+        },
+        "dds_pump_repumper": {
+            "device": "urukul2_ch3",
+            "cpld": "urukul2_cpld",
+            "description": "Pump Repumper",
+            "dataset_freq": "f_pump_repumper",
+            "dataset_amp": "amp_pump_repumper"
+        }
+    },
+
+    "ttl_aliases": {
+        "ttl_SPCM1":         {"device": "ttl0", "direction": "input",  "description": "Single-photon counter 1"},
+        "ttl_SPCM2":         {"device": "ttl1", "direction": "input",  "description": "Single-photon counter 2"},
+        "ttl_UV":     {"device": "ttl4", "direction": "output", "description": "UV lamp (increases MOT atom density)", "default_state": "off"},
+        "ttl_repump_switch": {"device": "ttl5", "direction": "output", "description": "MOT repump RF switch (ON=blocked)", "default_state": "on"},
+        "ttl_exc_atten1":    {"device": "ttl6", "direction": "output", "description": "Excitation attenuator 1 (ON=blocked)", "default_state": "on"},
+        "ttl_MW_switch":     {"device": "ttl7", "direction": "output", "description": "Microwave switch (ON=blocked)", "default_state": "on"},
+        "ttl_exc_atten2":    {"device": "ttl12", "direction": "output", "description": "Excitation attenuator 2 (ON=blocked)", "default_state": "on"},
+        "ttl_D1_exc_switch": {"device": "ttl14", "direction": "output", "description": "D1 pump and excitation switch (ON=blocked)", "default_state": "on"}
+    },
+
+    "dac_channels": {
+        "shim_X":  {"device": "zotino0", "channel": 0, "description": "Shim coil X"},
+        "shim_Y":  {"device": "zotino0", "channel": 1, "description": "Shim coil Y"},
+        "shim_Z1": {"device": "zotino0", "channel": 2, "description": "Shim coil Z1"},
+        "shim_Z2": {"device": "zotino0", "channel": 3, "description": "Shim coil Z2"}
+    },
+
+    "shim_configs": {
+        "_note": "Phase descriptions — see ExperimentVariables for correct physics documentation",
+        "idle":     {"description": "MOT loading: large Z gradient, low detuning",
+                     "datasets": ["shim_X_idle", "shim_Y_idle", "shim_Z1_idle", "shim_Z2_idle"],
+                     "cooling": ["f_cooling_MOT", "amp_cooling_MOT"]},
+        "compress": {"description": "MOT compression: transition stage, moderate detuning",
+                     "datasets": ["shim_X_compression", "shim_Y_compression", "shim_Z1_compression", "shim_Z2_compression"],
+                     "cooling": ["f_cooling_compress", "amp_cooling_compress"]},
+        "PGC":      {"description": "True sub-Doppler PGC: B~0, max detuning (MISNOMER: called off in original code)",
+                     "datasets": ["shim_X_off", "shim_Y_off", "shim_Z1_off", "shim_Z2_off"],
+                     "cooling": ["f_cooling_deep_PGC", "amp_cooling_deep_PGC"]},
+        "qaxis":    {"description": "Quantization axis: like PGC but with Y-field for quantization",
+                     "datasets": ["shim_X_qaxis", "shim_Y_qaxis", "shim_Z1_qaxis", "shim_Z2_qaxis"],
+                     "cooling": null}
+    }
+}

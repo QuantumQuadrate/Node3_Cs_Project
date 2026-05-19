@@ -1,0 +1,1238 @@
+"""Reusable @kernel physics subroutines for SNAQ-Node-1 Cs experiments.
+
+All functions take the experiment instance (``exp``) as the first argument
+so they can access device aliases and datasets set up by BaseExperiment.
+
+Device aliases used throughout (see config/device_aliases.json):
+  DDS: dds_cooling_DP, dds_repump, dds_D1_pump, dds_mw_IF, dds_RF,
+       dds_FORT, dds_excitation, dds_D1_onoff_L, dds_MOT_X/Y/Z, dds_pump_repumper
+  TTL: ttl_SPCM1/2, ttl_UV, ttl_repump_switch, ttl_MW_switch,
+       ttl_exc_atten1/2, ttl_D1_exc_switch
+
+Extracted from the latest Z/X parity experiments (April 2026).
+"""
+
+from artiq.experiment import *
+
+
+# =========================================================================
+#  FEEDBACK PREPARATION
+# =========================================================================
+
+@kernel
+def prepare_for_feedback(exp):
+    """Configure beams for feedback measurement.
+
+    Turns off repump RF, sets cooling to 122 MHz for feedback beam path,
+    turns off trap, and unblocks excitation path on sampler.
+    """
+    delay(1000 * us)
+    exp.dds_repump.sw.off()
+    delay(1 * us)
+    exp.ttl_repump_switch.on()          # block repump RF
+    delay(1000 * us)
+    exp.dds_cooling_DP.set(frequency=122 * MHz, amplitude=0.3)
+    exp.dds_cooling_DP.sw.on()
+    delay(100 * us)
+    exp.dds_FORT.sw.off()               # trap off for feedback
+    delay(1 * us)
+    exp.ttl_exc_atten1.off()            # unblock excitation atten1
+    delay(1 * us)
+    exp.ttl_D1_exc_switch.off()         # unblock D1/excitation switch
+    delay(100 * us)
+
+
+@kernel
+def restore_after_feedback(exp):
+    """Restore beams after feedback: block excitation, set cooling to MOT freq."""
+    delay(1 * us)
+    exp.ttl_D1_exc_switch.on()          # block D1/excitation
+    delay(1 * us)
+    exp.dds_excitation.sw.off()
+    delay(1 * us)
+    exp.ttl_exc_atten1.on()             # block excitation atten1
+    delay(1 * us)
+    exp.ttl_exc_atten2.on()             # block excitation atten1
+    delay(1 * us)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_MOT, amplitude=exp.amp_cooling_MOT)
+    exp.dds_cooling_DP.sw.on()
+    delay(100 * us)
+
+
+@kernel
+def imaging_pgc(exp):
+    """Short PGC before SPCM readout."""
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(exp.t_PGC_after_img)
+
+
+# =========================================================================
+#  SPCM IMAGING
+# =========================================================================
+
+@kernel
+def spcm_image_dual_parallel(exp, gate_time):
+    """Dual-SPCM fluorescence imaging with parallel gating.
+
+    Both SPCMs gate simultaneously. Higher timing precision but the
+    RTIO FIFO handles fewer events (overflow at lower count rates).
+    Use for short gates (parity, MW scan).
+
+    Returns (count1, count2).
+    """
+    # Imaging beams on (cooling + repump)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+
+    with parallel:
+        tend1 = exp.ttl_SPCM1.gate_rising(gate_time)
+        tend2 = exp.ttl_SPCM2.gate_rising(gate_time)
+    count1 = exp.ttl_SPCM1.count(tend1)
+    count2 = exp.ttl_SPCM2.count(tend2)
+    delay(100 * us)
+
+    return count1, count2
+
+
+@kernel
+def spcm_image_dual_sequential(exp, gate_time):
+    """Dual-SPCM fluorescence imaging with sequential gating.
+
+    Gates SPCMs one after the other (not parallel). Handles much higher
+    count rates without RTIO overflow. Use for long gates (atom loading monitor).
+    Matches the original atom_load_applet readout pattern.
+
+    Returns (count1, count2).
+    """
+    # Imaging beams on (cooling + repump)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+
+    t_end0 = exp.ttl_SPCM1.gate_rising(gate_time)
+    t_end1 = exp.ttl_SPCM2.gate_rising(gate_time)
+    delay(1 * us)
+    count1 = exp.ttl_SPCM1.count(t_end0)
+    delay(1 * ms)
+    count2 = exp.ttl_SPCM2.count(t_end1)
+    delay(1 * ms)
+
+    return count1, count2
+
+
+# Backward-compatible alias — defaults to parallel (used by parity, MW scan)
+@kernel
+def spcm_image_dual(exp, gate_time):
+    """Alias for spcm_image_dual_parallel (backward compatible)."""
+    return spcm_image_dual_parallel(exp, gate_time)
+
+
+@kernel
+def beams_off_for_imaging(exp):
+    """Turn off cooling and repump beams, block repump RF."""
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_repump.sw.off()
+    delay(1 * us)
+    exp.ttl_repump_switch.on()          # block repump
+    delay(1 * us)
+
+
+@kernel
+def beams_on_for_pgc(exp):
+    """Re-enable cooling and repump for PGC/imaging."""
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()         # unblock repump
+    delay(1 * us)
+
+
+@kernel
+def check_atom_loaded(exp, count1_bg, count2_bg):
+    """Full atom readout cycle: PGC → image → PGC → beams off → threshold check.
+
+    Performs imaging PGC, dual-SPCM readout, post-image PGC, then beams off.
+    Returns (atom_present, count1, count2) where atom_present is True if
+    (count1 + count2 - count1_bg - count2_bg) > atom_threshold.
+
+    Matches the parity Yellow scope atom check exactly.
+    """
+    imaging_pgc(exp)
+    beams_off_for_imaging(exp)
+    delay(exp.t_SPCM_exposure)
+
+    count1, count2 = spcm_image_dual(exp, exp.t_imaging_gate)
+
+    imaging_pgc(exp)
+    beams_off_for_imaging(exp)
+
+    atom_present = (count1 + count2 - count1_bg - count2_bg) > exp.atom_threshold
+    return atom_present, count1, count2
+
+
+# =========================================================================
+#  OPTICAL PUMPING
+# =========================================================================
+
+@kernel
+def optical_pumping_F3(exp):
+    """F=3 state preparation: brief cooling then beams off."""
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * ms)
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_D1_onoff_L.sw.off()
+    delay(1 * us)
+
+
+@kernel
+def optical_pumping_full(exp):
+    """Full optical pumping with Q-axis coils and MOT beams on for recooling."""
+    # Q-axis coils
+    exp.zotino0.write_dac(0, exp.shim_X_qaxis)
+    exp.zotino0.write_dac(1, exp.shim_Y_qaxis)
+    exp.zotino0.write_dac(2, exp.shim_Z1_qaxis)
+    exp.zotino0.write_dac(3, exp.shim_Z2_qaxis)
+    exp.zotino0.load()
+    delay(1 * ms)
+
+    # MOT fiber beams on for recooling during pump
+    exp.dds_MOT_X.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Y.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Z.sw.on()
+    delay(1 * us)
+
+    # MW IF set for pumping
+    exp.dds_mw_IF.set(frequency=exp.f_mw_parity_00, amplitude=exp.amp_mw_pulse)
+    delay(6 * us)
+
+    # D1 pump
+    exp.dds_D1_pump.set(frequency=exp.f_pump_D1, amplitude=exp.amp_pump_D1)
+    exp.dds_D1_pump.sw.on()
+    delay(6 * us)
+
+    # Excitation for pumping
+    exp.dds_excitation.set(frequency=exp.f_pump_excitation, amplitude=exp.amp_pump_excitation)
+    exp.dds_excitation.sw.on()
+    delay(6 * us)
+
+    # Pump repumper
+    exp.dds_pump_repumper.set(frequency=exp.f_pump_repumper, amplitude=exp.amp_pump_repumper_active)
+    exp.dds_pump_repumper.sw.on()
+    delay(6 * us)
+
+    # Unblock D1/excitation path
+    exp.ttl_D1_exc_switch.off()
+    delay(exp.t_optical_pump)
+
+    # Shut everything off simultaneously
+    t_end = now_mu()
+    at_mu(t_end + 1000)
+    with parallel:
+        exp.ttl_D1_exc_switch.on()
+        exp.dds_D1_pump.sw.off()
+        exp.dds_excitation.sw.off()
+        exp.dds_pump_repumper.sw.off()
+        exp.dds_MOT_X.sw.off()
+        exp.dds_MOT_Y.sw.off()
+        exp.dds_MOT_Z.sw.off()
+    delay(3 * us)
+
+
+# =========================================================================
+#  TRAP RAMP
+# =========================================================================
+
+@kernel
+def ramp_trap_amp(exp, start_amp, end_amp, n_steps, dt_us):
+    """Adiabatically ramp FORT amplitude.
+
+    Clamps amplitude to [0.0, 0.3].
+    """
+    steps = int(n_steps)
+    if steps <= 0:
+        return
+
+    step_size = (end_amp - start_amp) / n_steps
+    amp = start_amp
+
+    for i in range(steps + 1):
+        if amp < 0.0:
+            amp = 0.0
+        if amp > 0.3:
+            amp = 0.3
+        amp_q = int(amp * 1000.0) / 1000.0
+        exp.dds_FORT.set(frequency=exp.f_FORT, amplitude=amp_q)
+        delay(dt_us * us)
+        amp += step_size
+
+
+# =========================================================================
+#  EXCITATION PULSE WITH TIMESTAMPS
+# =========================================================================
+
+@kernel
+def excitation_pulse(exp):
+    """Single excitation attempt with trap-off/on and SPCM timestamp collection.
+
+    Returns (SPCM1_click_time_mu, SPCM2_click_time_mu, t0_mu).
+    Negative click_time means no photon detected.
+    """
+    exp.dds_excitation.set(frequency=exp.f_excitation_pulse, amplitude=exp.amp_excitation_pulse)
+    delay(5 * us)
+
+    t0 = now_mu()
+
+    # Trap off
+    at_mu(t0 + int(exp.exc_trap_off_offset_mu))
+    exp.dds_FORT.sw.off()
+    at_mu(t0 + int(exp.exc_trap_off_offset_mu) + int(exp.t_trap_off_mu))
+    exp.dds_FORT.sw.on()
+
+    # D1/excitation switch pulse
+    at_mu(t0 + int(exp.exc_d1_switch_offset_mu))
+    exp.ttl_D1_exc_switch.off()
+    at_mu(t0 + int(exp.exc_d1_switch_offset_mu) + int(exp.length_offset_mu))
+    exp.ttl_D1_exc_switch.on()
+
+    # Excitation attenuator pulse
+    at_mu(t0 + int(exp.exc_atten_offset_mu))
+    with parallel:
+        exp.ttl_exc_atten2.off()
+        exp.ttl_exc_atten1.off()
+    at_mu(t0 + int(exp.exc_atten_offset_mu) + 100)
+    with parallel:
+        exp.ttl_exc_atten2.on()
+        exp.ttl_exc_atten1.on()
+
+    # Excitation beam pulse
+    at_mu(t0 + int(exp.exc_beam_on_offset_mu))
+    exp.dds_excitation.sw.on()
+    at_mu(t0 + int(exp.exc_beam_on_offset_mu) + int(exp.exc_beam_duration_mu))
+    exp.dds_excitation.sw.off()
+
+    # SPCM gate
+    at_mu(t0 + int(exp.exc_spcm_gate_offset_mu))
+    with parallel:
+        t_end1 = exp.ttl_SPCM1.gate_rising(exp.t_spcm_collection_mu * ns)
+        t_end2 = exp.ttl_SPCM2.gate_rising(exp.t_spcm_collection_mu * ns)
+
+    click1 = exp.ttl_SPCM1.timestamp_mu(t_end1)
+    click2 = exp.ttl_SPCM2.timestamp_mu(t_end2)
+    delay(5 * us)
+
+    return click1, click2, t0
+
+
+# =========================================================================
+#  POST-DETECTION MICROWAVE SEQUENCES
+# =========================================================================
+
+@kernel
+def microwave_pi_pulse_z(exp, click_time_mu):
+    """Z-basis: single MW pi pulse on 11 transition after photon detection.
+
+    Uses t_pi_parity_mu (= t_pi_11_mu = 5120 mu), the 11 transition
+    (F=3,mF=1 -> F=4,mF=1).
+    click_time_mu is the SPCM timestamp used as timing reference.
+    """
+    at_mu(click_time_mu + 1100 + 12000)
+    exp.ttl_MW_switch.off()             # unblock MW
+    at_mu(click_time_mu + 20000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(click_time_mu + int(exp.t_pi_parity_mu) + 20000)
+    exp.dds_mw_IF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 20000 + 3300)
+    exp.ttl_MW_switch.on()              # block MW
+
+
+@kernel
+def microwave_two_photon_x(exp, click_time_mu):
+    """X-basis: MW pi pulse + two-photon basis rotation.
+
+    Sequence:
+    1. Single pi pulse on 11 transition (t_pi_parity_mu)
+    2. Set MW IF to two-photon frequency, set RF antenna frequency
+    3. Simultaneous MW + RF pulse for basis rotation (t_2ph_pulse_mu)
+
+    click_time_mu is the SPCM timestamp used as timing reference.
+    """
+    # Step 1: pi pulse (11 transition)
+    at_mu(click_time_mu + 2000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(click_time_mu + int(exp.t_pi_parity_mu) + 2000)
+    exp.dds_mw_IF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 2000 + 3300)
+    exp.ttl_MW_switch.on()              # block MW briefly
+
+    # Step 2: set two-photon frequencies
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 5000 + 3300)
+    exp.dds_mw_IF.set(frequency=exp.f_mw_2ph, amplitude=exp.amp_mw_pulse)
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 15000 + 3300)
+    exp.dds_RF.set(frequency=exp.f_RF_2ph, amplitude=exp.amp_RF_2ph)
+
+    # Step 3: simultaneous MW + RF pulse
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 3300)
+    exp.ttl_MW_switch.off()             # unblock MW
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 4000 + 3300)
+    with parallel:
+        exp.dds_mw_IF.sw.on()
+        exp.dds_RF.sw.on()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 4000 + int(exp.t_2ph_pulse_mu) + 3300)
+    with parallel:
+        exp.dds_mw_IF.sw.off()
+        exp.dds_RF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 4100 + int(exp.t_2ph_pulse_mu) + 3300)
+    exp.ttl_MW_switch.on()              # block MW
+
+
+@kernel
+def microwave_two_photon_y(exp, click_time_mu):
+    """Y-basis: MW pi pulse + two-photon basis rotation with RF phase = 0.25.
+
+    Identical to microwave_two_photon_x except the RF antenna is set
+    with phase=0.25 (a 90 deg phase shift), which rotates the basis from
+    X to Y on the Bloch sphere. See archive Y_Parity_Optimized_v2 line 658.
+
+    Sequence:
+    1. Single pi pulse on 11 transition (t_pi_parity_mu)
+    2. Set MW IF to two-photon frequency; set RF antenna with phase=0.25
+    3. Simultaneous MW + RF pulse for basis rotation (t_2ph_pulse_mu)
+
+    click_time_mu is the SPCM timestamp used as timing reference.
+    """
+    # Step 1: pi pulse (11 transition)
+    at_mu(click_time_mu + 2000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(click_time_mu + int(exp.t_pi_parity_mu) + 2000)
+    exp.dds_mw_IF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 2000 + 3300)
+    exp.ttl_MW_switch.on()              # block MW briefly
+
+    # Step 2: set two-photon frequencies (RF phase = 0.25 selects Y basis)
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 5000 + 3300)
+    exp.dds_mw_IF.set(frequency=exp.f_mw_2ph, amplitude=exp.amp_mw_pulse)
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 15000 + 3300)
+    exp.dds_RF.set(frequency=exp.f_RF_2ph, phase=0.25, amplitude=exp.amp_RF_2ph)
+
+    # Step 3: simultaneous MW + RF pulse
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 3300)
+    exp.ttl_MW_switch.off()             # unblock MW
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 4000 + 3300)
+    with parallel:
+        exp.dds_mw_IF.sw.on()
+        exp.dds_RF.sw.on()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 4000 + int(exp.t_2ph_pulse_mu) + 3300)
+    with parallel:
+        exp.dds_mw_IF.sw.off()
+        exp.dds_RF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_parity_mu) + 25000 + 4100 + int(exp.t_2ph_pulse_mu) + 3300)
+    exp.ttl_MW_switch.on()              # block MW
+
+
+# =========================================================================
+#  BLOWAWAY
+# =========================================================================
+
+@kernel
+def blowaway_f4(exp, amp_MOT_Z_current):
+    """Resonant blowaway of F=4 population.
+
+    Uses off shims, cooling at blowaway frequency (99 MHz),
+    D1_onoff_L and MOT_Z beams for 500us.
+
+    Parameters
+    ----------
+    amp_MOT_Z_current : float
+        Current MOT Z amplitude to restore after blowaway.
+    """
+    delay(10 * us)
+    exp.zotino0.write_dac(0, exp.shim_X_off)
+    exp.zotino0.write_dac(1, exp.shim_Y_off)
+    exp.zotino0.write_dac(2, exp.shim_Z1_off)
+    exp.zotino0.write_dac(3, exp.shim_Z2_off)
+    exp.zotino0.load()
+    delay(9 * ms)
+
+    delay(10 * us)
+    exp.dds_MOT_Z.set(frequency=80 * MHz, amplitude=exp.amp_cooling_blowaway_Z)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_blowaway, amplitude=exp.amp_cooling_blowaway)
+    delay(10 * us)
+
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_D1_onoff_L.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Z.sw.on()
+    delay(exp.t_blowaway)
+
+    # Restore
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_MOT_X.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Y.sw.on()
+    delay(1 * us)
+
+    exp.dds_cooling_DP.set(frequency=130 * MHz, amplitude=0.35)
+    exp.dds_MOT_Z.set(frequency=80 * MHz, amplitude=amp_MOT_Z_current)
+    delay(10 * us)
+
+
+# =========================================================================
+#  RECOOLING & SURVIVAL CHECK
+# =========================================================================
+
+@kernel
+def recool_and_check_survival(exp, count_bg):
+    """PGC recooling + dual SPCM imaging for atom survival check.
+
+    Returns True if atom is still present (counts above threshold).
+    """
+    exp.dds_D1_onoff_L.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()         # unblock repump
+
+    # Imaging
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+
+    with parallel:
+        tend1 = exp.ttl_SPCM1.gate_rising(exp.t_imaging_gate)
+        tend2 = exp.ttl_SPCM2.gate_rising(exp.t_imaging_gate)
+    count1 = exp.ttl_SPCM1.count(tend1)
+    count2 = exp.ttl_SPCM2.count(tend2)
+    delay(100 * us)
+
+    # PGC
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(10 * us)
+    delay(exp.t_PGC_after_img)
+
+    beams_off_for_imaging(exp)
+
+    return (count1 + count2 - count_bg) > exp.atom_threshold
+
+
+# =========================================================================
+#  PGC BETWEEN EXCITATION CYCLES
+# =========================================================================
+
+@kernel
+def pgc_between_excitations(exp):
+    """Brief PGC recooling between excitation attempts (Orange scope)."""
+    delay(1 * us)
+    exp.zotino0.write_dac(0, exp.shim_X_off)
+    exp.zotino0.write_dac(1, exp.shim_Y_off)
+    exp.zotino0.write_dac(2, exp.shim_Z1_off)
+    exp.zotino0.write_dac(3, exp.shim_Z2_off)
+    exp.zotino0.load()
+    delay(1 * ms)
+
+    # Trap back up
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+
+    exp.dds_MOT_X.sw.on()
+    exp.dds_MOT_Y.sw.on()
+    exp.dds_MOT_Z.sw.on()
+    delay(1 * us)
+    exp.dds_D1_onoff_L.sw.on()
+
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()         # unblock repump
+    delay(exp.t_PGC_after_img)
+    delay(1 * us)
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_repump.sw.off()
+    delay(1 * us)
+    exp.ttl_repump_switch.on()
+    exp.dds_D1_onoff_L.sw.off()
+
+
+# =========================================================================
+#  RESET TO MOT
+# =========================================================================
+
+@kernel
+def reset_to_mot(exp):
+    """Reset all beams and shims to MOT loading configuration."""
+    delay(1 * ms)
+    delay(1 * us)
+    exp.zotino0.write_dac(0, 0.0)
+    exp.zotino0.write_dac(1, 0.0)
+    exp.zotino0.write_dac(2, 0.0)
+    exp.zotino0.write_dac(3, 0.0)
+    exp.zotino0.load()
+    delay(1 * us)
+
+    exp.dds_cooling_DP.set(frequency=112 * MHz, amplitude=0.35)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * ms)
+
+    exp.dds_D1_onoff_L.sw.on()
+    delay(5 * us)
+    exp.dds_MOT_Z.sw.on()
+    delay(5 * us)
+    exp.dds_MOT_X.sw.on()
+    delay(5 * us)
+    exp.dds_MOT_Y.sw.on()
+    delay(5 * us)
+
+
+# =========================================================================
+#  FINAL STATE READOUT (Blue scope ending)
+# =========================================================================
+
+@kernel
+def final_state_readout(exp):
+    """Post-blowaway PGC + dual SPCM imaging for final state detection.
+
+    Returns (count1, count2) for the final readout.
+    """
+    # PGC
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    delay(exp.t_PGC_after_img)
+
+    # Final imaging
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+
+    with parallel:
+        tend1 = exp.ttl_SPCM1.gate_rising(exp.t_imaging_gate)
+        tend2 = exp.ttl_SPCM2.gate_rising(exp.t_imaging_gate)
+    count1 = exp.ttl_SPCM1.count(tend1)
+    count2 = exp.ttl_SPCM2.count(tend2)
+    delay(100 * us)
+
+    # PGC after final readout
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(10 * us)
+    delay(exp.t_PGC_after_img)
+
+    beams_off_for_imaging(exp)
+
+    return count1, count2
+
+
+# =========================================================================
+#  COMPOSITE SEQUENCES (high-level, reusable across experiments)
+# =========================================================================
+
+@kernel
+def background_measurement_dual(exp, gate_time):
+    """Dual-SPCM background measurement: cooling + repump ON, FORT OFF.
+
+    Measures fluorescence background from scattered cooling light with
+    no trapped atom present. This is the correct background for atom
+    detection thresholding: (signal - background) > threshold.
+
+    Matches the parity experiment's background measurement exactly:
+      1. Cooling beam ON at imaging frequency
+      2. Repump ON, repump switch unblocked
+      3. FORT set to nominal depth but switch OFF (no atom)
+      4. Dual SPCM gate
+      5. Returns (count1_bg, count2_bg)
+
+    Call BEFORE load_atom().
+    """
+    # Cooling on at imaging frequency
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(100 * us)
+
+    # Repump on
+    exp.dds_repump.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+
+    # FORT set but OFF (no trap = no atom)
+    exp.dds_FORT.set(frequency=exp.f_FORT, amplitude=exp.nominal_trapdepth)
+    exp.dds_FORT.sw.off()
+    delay(100 * us)
+
+    # Dual SPCM background gate
+    with parallel:
+        tend1 = exp.ttl_SPCM1.gate_rising(gate_time)
+        tend2 = exp.ttl_SPCM2.gate_rising(gate_time)
+    count1_bg = exp.ttl_SPCM1.count(tend1)
+    count2_bg = exp.ttl_SPCM2.count(tend2)
+    delay(100 * us)
+
+    return count1_bg, count2_bg
+
+
+@kernel
+def load_atom(exp):
+    """Complete atom loading cycle: MOT → compression → PGC → field settle.
+
+    Performs the full sequence:
+      1. Set idle (MOT) shims, cooling at MOT frequency, wait t_MOT2PGC
+      2. Set compression shims, cooling at compress frequency, wait t_PGC_2_off
+      3. Deep PGC at max detuning, 1ms
+      4. Set off (B~0) shims, wait t_field_settle for field to decay
+
+    Does NOT do imaging or SPCM readout — call spcm_readout after this.
+    """
+    # Phase 1: MOT loading
+    # UV ON: increases atom density in MOT
+    exp.ttl_UV.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    exp.dds_FORT.set(frequency=exp.f_FORT, amplitude=exp.nominal_trapdepth)
+    exp.dds_FORT.sw.on()
+    delay(100 * us)
+    delay(exp.t_wait)
+
+    exp.zotino0.write_dac(0, exp.shim_X_idle)
+    exp.zotino0.write_dac(1, exp.shim_Y_idle)
+    exp.zotino0.write_dac(2, exp.shim_Z1_idle)
+    exp.zotino0.write_dac(3, exp.shim_Z2_idle)
+    exp.zotino0.load()
+    delay(1 * us)
+
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_MOT, amplitude=exp.amp_cooling_MOT)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    delay(exp.t_MOT2PGC)
+
+    # Phase 2: MOT compression
+    exp.zotino0.write_dac(0, exp.shim_X_compression)
+    exp.zotino0.write_dac(1, exp.shim_Y_compression)
+    exp.zotino0.write_dac(2, exp.shim_Z1_compression)
+    exp.zotino0.write_dac(3, exp.shim_Z2_compression)
+    exp.zotino0.load()
+    delay(1 * us)
+    exp.ttl_UV.off()
+    delay(1 * us)
+
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_compress, amplitude=exp.amp_cooling_compress)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    delay(exp.t_PGC_2_off)
+
+    # Phase 3: Deep sub-Doppler PGC
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * ms)
+
+    # Phase 4: Field settle (B~0)
+    exp.zotino0.write_dac(0, exp.shim_X_off)
+    exp.zotino0.write_dac(1, exp.shim_Y_off)
+    exp.zotino0.write_dac(2, exp.shim_Z1_off)
+    exp.zotino0.write_dac(3, exp.shim_Z2_off)
+    exp.zotino0.load()
+    delay(exp.t_field_settle)
+
+
+@kernel
+def spcm_readout_single(exp, gate_time):
+    """Bare single-SPCM gate on SPCM1 only. Returns count.
+
+    Does NOT set up beams — call imaging_readout_single for full readout.
+    """
+    tend = exp.ttl_SPCM1.gate_rising(gate_time)
+    count = exp.ttl_SPCM1.count(tend)
+    delay(10 * us)
+    return count
+
+
+@kernel
+def imaging_readout_single(exp, gate_time):
+    """Full single-SPCM imaging readout: cooling + repump ON, SPCM gate.
+
+    Sets cooling to imaging frequency, turns on repump, then takes
+    single-SPCM readout with the specified gate time. Returns count.
+    """
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.set(frequency=exp.f_repump, amplitude=exp.amp_repump)
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    return spcm_readout_single(exp, gate_time)
+
+
+@kernel
+def imaging_readout_dual(exp, gate_time):
+    """Full dual-SPCM imaging readout: cooling + repump ON, dual SPCM gate.
+
+    Sets cooling to imaging frequency, turns on repump, then takes
+    dual-SPCM readout with the specified gate time.
+
+    Parameters
+    ----------
+    gate_time : float
+        SPCM gate duration in seconds. Use exp.t_imaging_gate (4ms, fast check)
+        or exp.t_readout_monitor (100ms, fluorescence monitoring).
+
+    Returns (count1, count2).
+
+        # Imaging beams on (cooling + repump)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    """
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.set(frequency=exp.f_repump, amplitude=exp.amp_repump)
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    return spcm_image_dual(exp, gate_time)
+
+
+@kernel
+def f3_state_prep(exp):
+    """F=3 state preparation: block repump, turn off cooling and repump beams.
+
+    Prepares the atom in F=3 before optical pumping or MW operations.
+    """
+    exp.ttl_repump_switch.on()
+    delay(1 * ms)
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_repump.sw.off()
+    delay(1 * us)
+
+
+@kernel
+def set_qaxis(exp, x_q, y_q, z1_q, z2_q):
+    """Set quantization axis shim coils and wait for field to settle.
+
+    Call before trap ramp and optical pumping to establish the B-field
+    direction for MW/excitation operations.
+    """
+    delay(1 * ms)
+    exp.zotino0.write_dac(0, x_q)
+    exp.zotino0.write_dac(1, y_q)
+    exp.zotino0.write_dac(2, z1_q)
+    exp.zotino0.write_dac(3, z2_q)
+    exp.zotino0.load()
+    delay(1 * ms)
+
+
+@kernel
+def optical_pumping_mw_scan(exp):
+    """Optical pumping for MW scan: pump WITHOUT MOT fiber beams.
+
+    Unlike optical_pumping_full() (used in parity), this version does NOT
+    turn on MOT fiber beams during pumping. The original MW scan code
+    never turns on urukul2_ch0/1/2 during pump.
+
+    Call set_qaxis() separately before this to set the quantization axis.
+    """
+    exp.dds_D1_pump.set(frequency=exp.f_pump_D1, amplitude=exp.amp_pump_D1)
+    exp.dds_D1_pump.sw.on()
+    delay(1 * us)
+    exp.dds_excitation.set(frequency=exp.f_pump_excitation, amplitude=exp.amp_pump_excitation)
+    exp.dds_excitation.sw.on()
+    delay(1 * us)
+    exp.dds_pump_repumper.set(frequency=exp.f_pump_repumper, amplitude=exp.amp_pump_repumper_active)
+    exp.dds_pump_repumper.sw.on()
+    delay(1 * us)
+    exp.ttl_D1_exc_switch.off()
+    delay(exp.t_optical_pump)
+
+    # Shut off simultaneously
+    t_end = now_mu()
+    at_mu(t_end + 1000)
+    with parallel:
+        exp.ttl_D1_exc_switch.on()
+        exp.dds_D1_pump.sw.off()
+        exp.dds_excitation.sw.off()
+        exp.dds_pump_repumper.sw.off()
+    delay(1 * us)
+
+
+@kernel
+def blowaway_mw_scan(exp, amp_MOT_Z_current):
+    """Blowaway for MW scan: immediate blowaway, off shims AFTER.
+
+    Matches v7_packing working code exactly:
+      - NO off shims before blowaway (starts within ~20us of MW pulse)
+      - MOT X/Y stay ON (not turned off)
+      - Sequential switching
+      - Off shims set AFTER blowaway
+    Minimizing delay before blowaway is critical — any gap allows
+    F=4 atoms to depump back to F=3 via stray light.
+    """
+    # Configure blowaway beams (immediate, no shim pre-settle)
+    delay(10 * us)
+    exp.dds_MOT_Z.set(frequency=exp.f_MOT_Z, amplitude=exp.amp_cooling_blowaway_Z)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_blowaway, amplitude=exp.amp_cooling_blowaway)
+    delay(10 * us)
+
+    # Blowaway pulse: sequential switching (matches working original)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_D1_onoff_L.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Z.sw.on()
+    delay(exp.t_blowaway)
+
+    # End blowaway
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_MOT_X.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Y.sw.on()
+    delay(1 * us)
+
+    # Restore cooling and MOT Z frequencies
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_restore, amplitude=exp.amp_cooling_restore)
+    exp.dds_MOT_Z.set(frequency=exp.f_MOT_Z, amplitude=amp_MOT_Z_current)
+    delay(10 * us)
+
+    # Off shims AFTER blowaway
+    delay(1 * us)
+    exp.zotino0.write_dac(0, exp.shim_X_off)
+    exp.zotino0.write_dac(1, exp.shim_Y_off)
+    exp.zotino0.write_dac(2, exp.shim_Z1_off)
+    exp.zotino0.write_dac(3, exp.shim_Z2_off)
+    exp.zotino0.load()
+    delay(1 * ms)
+
+
+@kernel
+def pgc_long(exp):
+    """Long PGC cooling after blowaway (10ms duration, used in MW scan).
+
+    Longer than standard imaging_pgc() which uses t_PGC_after_img.
+    """
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    delay(exp.t_PGC_after_blowaway)
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.ttl_repump_switch.on()
+    delay(1 * us)
+
+
+@kernel
+def background_measurement(exp):
+    """FORT-off background dual-SPCM measurement.
+
+    Zeros shims, turns FORT off, waits 10ms for atoms to fall,
+    turns FORT on, then takes dual-SPCM readout.
+    Returns (count1_bg, count2_bg).
+    """
+    exp.zotino0.write_dac(0, 0.0)
+    exp.zotino0.write_dac(1, 0.0)
+    exp.zotino0.write_dac(2, 0.0)
+    exp.zotino0.write_dac(3, 0.0)
+    exp.zotino0.write_dac(6, 0.0)
+    exp.zotino0.load()
+    delay(1 * ms)
+    delay(1 * us)
+    exp.dds_FORT.sw.off()
+    delay(10000 * us)
+    exp.dds_FORT.sw.on()
+    delay(1 * us)
+    count1_bg, count2_bg = spcm_image_dual(exp, exp.t_imaging_gate)
+    return count1_bg, count2_bg
+
+
+@kernel
+def reset_mw_scan(exp):
+    """Reset beams and switches for next MW scan cycle."""
+    delay(10 * ms)
+    delay(2000 * us)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_MOT, amplitude=exp.amp_cooling_deep_PGC)
+    delay(2000 * us)
+    exp.dds_cooling_DP.sw.on()
+    delay(1000 * us)
+    exp.ttl_UV.on()
+    delay(1000 * us)
+    exp.dds_mw_IF.sw.off()
+    delay(1 * us)
+    exp.dds_RF.sw.off()
+    delay(1 * us)
+    exp.ttl_MW_switch.on()
+    delay(1 * us)
+
+
+@kernel
+def reload_beams(exp):
+    """Per-loop beam reload for MW scan: set cooling and repump for fast MOT reload."""
+    exp.dds_cooling_DP.sw.off()
+    delay(100 * us)
+    exp.ttl_repump_switch.on()
+    delay(100 * us)
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_reload, amplitude=exp.amp_cooling_reload)
+    exp.dds_cooling_DP.sw.on()
+    delay(10 * us)
+    exp.dds_repump.set(frequency=exp.f_repump, amplitude=exp.amp_repump)
+    exp.ttl_repump_switch.off()
+    delay(10 * us)
+    delay(200 * us)
+
+
+# =========================================================================
+#  MICROWAVE SPECTROSCOPY PULSE SUBROUTINES
+# =========================================================================
+
+@kernel
+def mw_pulse_00(exp, freq_hz, duration_mu):
+    """Single MW pulse on 00 transition.
+
+    Used for Frequency_00 and Time_00 scans.
+    freq_hz: MW IF frequency in Hz (scanned or fixed).
+    duration_mu: pulse duration in machine units (fixed or scanned).
+    """
+    exp.dds_mw_IF.set(frequency=freq_hz, amplitude=exp.amp_mw_pulse)
+    t_rf = now_mu()
+    at_mu(t_rf + 100)
+    exp.ttl_MW_switch.off()             # unblock MW
+    at_mu(t_rf + 4000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4000 + int(duration_mu))
+    exp.dds_mw_IF.sw.off()
+    at_mu(t_rf + 4100 + int(duration_mu))
+    exp.ttl_MW_switch.on()              # block MW
+
+
+@kernel
+def mw_pulse_01(exp, freq_hz, duration_mu):
+    """Single MW pulse on 01 transition.
+
+    Used for Frequency_01 and Time_01 scans.
+    01 transition has different timing: two 5us delays before pulse.
+    """
+    exp.dds_mw_IF.set(frequency=freq_hz, amplitude=exp.amp_mw_pulse)
+    delay(5 * us)
+    exp.ttl_MW_switch.off()             # unblock MW
+    delay(5 * us)
+    t_rf = now_mu()
+    if t_rf > 0:
+        at_mu(t_rf)
+        exp.dds_mw_IF.sw.on()
+        at_mu(t_rf + int(duration_mu))
+        exp.dds_mw_IF.sw.off()
+    delay(1 * us)
+    exp.ttl_MW_switch.on()              # block MW
+
+
+@kernel
+def mw_two_step_11(exp, f01_hz, t01_mu, f11_hz, t11_mu):
+    """Fixed 01 pi pulse followed by scanned 11 pulse.
+
+    Used for Frequency_11 and Time_11 scans.
+    Step 1: pi pulse on 01 transition (maps population to mF=1).
+    Step 2: probe pulse on 11 transition (scanned freq or duration).
+    """
+    # Step 1: fixed 01 pi pulse
+    exp.dds_mw_IF.set(frequency=f01_hz, amplitude=exp.amp_mw_pulse)
+    delay(5 * us)
+    exp.ttl_MW_switch.off()
+    delay(5 * us)
+    t_rf = now_mu()
+    if t_rf > 0:
+        at_mu(t_rf)
+        exp.dds_mw_IF.sw.on()
+        at_mu(t_rf + int(t01_mu))
+        exp.dds_mw_IF.sw.off()
+        at_mu(t_rf + 100 + int(t01_mu))
+        exp.ttl_MW_switch.on()
+
+        # Step 2: scanned 11 pulse
+        at_mu(t_rf + 100 + int(t01_mu) + 1000)
+        exp.dds_mw_IF.set(frequency=f11_hz, amplitude=exp.amp_mw_pulse)
+        at_mu(t_rf + 100 + int(t01_mu) + 11000)
+        exp.ttl_MW_switch.off()
+        at_mu(t_rf + 100 + int(t01_mu) + 11000 + 4000)
+        exp.dds_mw_IF.sw.on()
+        at_mu(t_rf + 100 + int(t01_mu) + 11000 + 4000 + int(t11_mu))
+        exp.dds_mw_IF.sw.off()
+        at_mu(t_rf + 100 + int(t01_mu) + 11000 + 4100 + int(t11_mu))
+        exp.ttl_MW_switch.on()
+
+
+@kernel
+def mw_two_step_2ph(exp, f01_hz, t01_mu, f_mw_2ph_hz, f_rf_hz, t2ph_mu):
+    """Fixed 01 pi pulse followed by simultaneous MW+RF two-photon pulse.
+
+    Used for Frequency_2ph and Time_2ph scans.
+    Step 1: pi pulse on 01 (maps to mF=1).
+    Step 2: two-photon drive (mF=-1 <-> mF=+1) with MW IF + RF antenna.
+    """
+    # Step 1: fixed 01 pi pulse
+    exp.dds_mw_IF.set(frequency=f01_hz, amplitude=exp.amp_mw_pulse)
+    delay(5 * us)
+    exp.ttl_MW_switch.off()
+    delay(5 * us)
+    t_rf = now_mu()
+    if t_rf > 0:
+        at_mu(t_rf)
+        exp.dds_mw_IF.sw.on()
+        at_mu(t_rf + int(t01_mu))
+        exp.dds_mw_IF.sw.off()
+        at_mu(t_rf + 100 + int(t01_mu))
+        exp.ttl_MW_switch.on()
+
+        # Step 2: two-photon pulse (MW + RF simultaneously)
+        at_mu(t_rf + 100 + int(t01_mu) + 1000)
+        with parallel:
+            exp.dds_mw_IF.set(frequency=f_mw_2ph_hz, amplitude=exp.amp_mw_pulse)
+            exp.dds_RF.set(frequency=f_rf_hz, amplitude=exp.amp_RF_2ph)
+        at_mu(t_rf + 100 + int(t01_mu) + 11000)
+        exp.ttl_MW_switch.off()
+        at_mu(t_rf + 100 + int(t01_mu) + 11000 + 4000)
+        with parallel:
+            exp.dds_mw_IF.sw.on()
+            exp.dds_RF.sw.on()
+        at_mu(t_rf + 100 + int(t01_mu) + 11000 + 4000 + int(t2ph_mu))
+        with parallel:
+            exp.dds_mw_IF.sw.off()
+            exp.dds_RF.sw.off()
+        at_mu(t_rf + 100 + int(t01_mu) + 11000 + 4100 + int(t2ph_mu))
+        exp.ttl_MW_switch.on()
+
+
+@kernel
+def ramsey_00(exp, freq_hz, t_half_pi_mu, t_free_mu):
+    """Ramsey sequence on 00 transition: pi/2 - free evolution - pi/2.
+
+    freq_hz: MW IF frequency (slightly detuned from resonance).
+    t_half_pi_mu: half-pi pulse duration (= t_pi_00 / 2).
+    t_free_mu: free evolution time (scanned parameter).
+    """
+    exp.dds_mw_IF.set(frequency=freq_hz, amplitude=exp.amp_mw_pulse)
+    t_rf = now_mu()
+    at_mu(t_rf + 100)
+    exp.ttl_MW_switch.off()
+    # First pi/2
+    at_mu(t_rf + 4000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4000 + int(t_half_pi_mu))
+    exp.dds_mw_IF.sw.off()
+    # Free evolution
+    at_mu(t_rf + 4100 + int(t_half_pi_mu) + int(t_free_mu))
+    # Second pi/2
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4100 + int(t_half_pi_mu) + int(t_free_mu) + int(t_half_pi_mu))
+    exp.dds_mw_IF.sw.off()
+    at_mu(t_rf + 4200 + int(t_half_pi_mu) + int(t_free_mu) + int(t_half_pi_mu))
+    exp.ttl_MW_switch.on()
+
+
+@kernel
+def ramsey_11(exp, f01_hz, t01_mu, f11_hz, t_half_pi_mu, t_free_mu):
+    """01 prep followed by Ramsey on 11 transition.
+
+    Step 1: pi pulse on 01 (maps to mF=1).
+    Step 2: Ramsey pi/2 - free evolution - pi/2 on 11.
+    """
+    # Step 1: fixed 01 pi pulse
+    exp.dds_mw_IF.set(frequency=f01_hz, amplitude=exp.amp_mw_pulse)
+    t_rf = now_mu()
+    at_mu(t_rf + 100)
+    exp.ttl_MW_switch.off()
+    at_mu(t_rf + 4000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4000 + int(t01_mu))
+    exp.dds_mw_IF.sw.off()
+    at_mu(t_rf + 4100 + int(t01_mu))
+    exp.ttl_MW_switch.on()
+
+    # Step 2: Ramsey on 11
+    at_mu(t_rf + 4100 + int(t01_mu) + 1000)
+    exp.dds_mw_IF.set(frequency=f11_hz, amplitude=exp.amp_mw_pulse)
+    at_mu(t_rf + 4100 + int(t01_mu) + 2000)
+    exp.ttl_MW_switch.off()
+    # First pi/2
+    at_mu(t_rf + 4100 + int(t01_mu) + 2000 + 1000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4100 + int(t01_mu) + 2000 + 1000 + int(t_half_pi_mu))
+    exp.dds_mw_IF.sw.off()
+    # Free evolution + second pi/2
+    at_mu(t_rf + 4100 + int(t01_mu) + 2000 + 1000 + int(t_half_pi_mu) + int(t_free_mu))
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4100 + int(t01_mu) + 2000 + 1000 + int(t_half_pi_mu) + int(t_free_mu) + int(t_half_pi_mu))
+    exp.dds_mw_IF.sw.off()
+    at_mu(t_rf + 4200 + int(t01_mu) + 2000 + 1000 + int(t_half_pi_mu) + int(t_free_mu) + int(t_half_pi_mu))
+    exp.ttl_MW_switch.on()
+
+
+@kernel
+def ramsey_2ph(exp, f01_hz, t01_mu, f_mw_2ph_hz, f_rf_hz, t_half_pi_mu, t_free_mu):
+    """01 prep followed by two-photon Ramsey.
+
+    Step 1: pi pulse on 01 (maps to mF=1).
+    Step 2: two-photon Ramsey pi/2 - free evolution - pi/2 (MW + RF simultaneously).
+    """
+    # Step 1: fixed 01 pi pulse
+    exp.dds_mw_IF.set(frequency=f01_hz, amplitude=exp.amp_mw_pulse)
+    t_rf = now_mu()
+    at_mu(t_rf + 100)
+    exp.ttl_MW_switch.off()
+    at_mu(t_rf + 4000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(t_rf + 4000 + int(t01_mu))
+    exp.dds_mw_IF.sw.off()
+    at_mu(t_rf + 4100 + int(t01_mu))
+    exp.ttl_MW_switch.on()
+
+    # Step 2: two-photon Ramsey
+    at_mu(t_rf + 4100 + int(t01_mu) + 1000)
+    exp.dds_mw_IF.set(frequency=f_mw_2ph_hz, amplitude=exp.amp_mw_pulse)
+    at_mu(t_rf + 4100 + int(t01_mu) + 2000)
+    exp.dds_RF.set(frequency=f_rf_hz, amplitude=exp.amp_RF_2ph)
+    at_mu(t_rf + 4100 + int(t01_mu) + 3000)
+    exp.ttl_MW_switch.off()
+    # First pi/2
+    at_mu(t_rf + 4100 + int(t01_mu) + 4000)
+    with parallel:
+        exp.dds_mw_IF.sw.on()
+        exp.dds_RF.sw.on()
+    at_mu(t_rf + 4100 + int(t01_mu) + 4000 + int(t_half_pi_mu))
+    with parallel:
+        exp.dds_mw_IF.sw.off()
+        exp.dds_RF.sw.off()
+    # Free evolution + second pi/2
+    at_mu(t_rf + 4100 + int(t01_mu) + 4000 + int(t_half_pi_mu) + int(t_free_mu))
+    with parallel:
+        exp.dds_mw_IF.sw.on()
+        exp.dds_RF.sw.on()
+    at_mu(t_rf + 4100 + int(t01_mu) + 4000 + int(t_half_pi_mu) + int(t_free_mu) + int(t_half_pi_mu))
+    with parallel:
+        exp.dds_mw_IF.sw.off()
+        exp.dds_RF.sw.off()
+    at_mu(t_rf + 4200 + int(t01_mu) + 4000 + int(t_half_pi_mu) + int(t_free_mu) + int(t_half_pi_mu))
+    exp.ttl_MW_switch.on()

@@ -1,0 +1,50 @@
+{
+    "_note": "Feedback tuning parameters. Reference voltages are in calibration_references.json.",
+    "channels": {
+        "MOT_X": {
+            "p_gain": 0.08,
+            "tolerance": 0.01,
+            "max_iterations": 20,
+            "initial_amp": 0.13,
+            "max_amp": 0.17,
+            "frequency_hz": 80e6,
+            "description": "MOT cooling X fiber AOM"
+        },
+        "MOT_Y": {
+            "p_gain": 0.08,
+            "tolerance": 0.01,
+            "max_iterations": 20,
+            "initial_amp": 0.11,
+            "max_amp": 0.17,
+            "frequency_hz": 80e6,
+            "description": "MOT cooling Y fiber AOM"
+        },
+        "MOT_Z": {
+            "p_gain": 0.08,
+            "tolerance": 0.01,
+            "max_iterations": 20,
+            "initial_amp": 0.08,
+            "max_amp": 0.17,
+            "frequency_hz": 80e6,
+            "description": "MOT cooling Z fiber AOM"
+        },
+        "FORT": {
+            "p_gain": 0.08,
+            "tolerance": 0.001,
+            "max_iterations": 60,
+            "initial_amp": 0.093,
+            "max_amp": 0.25,
+            "frequency_hz": 150e6,
+            "description": "Trap AOM @1064nm"
+        },
+        "excitation": {
+            "p_gain": 0.0,
+            "tolerance": 1.0,
+            "max_iterations": 1,
+            "initial_amp": 0.18,
+            "max_amp": 0.5,
+            "frequency_hz": 145e6,
+            "description": "D1 on-off AOM R, Excitation — feedback permanently disabled (i2v off)"
+        }
+    }
+}
