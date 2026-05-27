@@ -755,6 +755,252 @@ def load_atom(exp):
 
 
 @kernel
+def load_atom_deterministic(exp):
+    """Deterministic atom loader v2: MOT load -> compress -> image+poll
+    -> PGC on captured atom.
+
+    Adapted from Node-1's `load_MOT_and_FORT_until_atom`
+    (archive/Node1_Experiment/experiment_functions_NODE1.py:638-817) but
+    restructured for Node-3: polling happens during a dedicated post-
+    compression imaging phase (cooling DP at f_cooling_imaging) for SNR,
+    then a brief PGC cools the captured atom before returning.
+
+    Phases:
+      A.  MOT loading       idle shims, cooling at f_cooling_MOT, wait
+                            t_MOT2PGC. Same as load_atom Phase 1.
+      B1. Compression       compression shims, cooling at f_cooling_compress,
+                            wait t_PGC_2_off. Same as load_atom Phase 2,
+                            ending without doing deep PGC.
+      B2. Image + polling   cooling at f_cooling_imaging, MOT XYZ + repump
+                            stay on so light-assisted collisions keep
+                            occupancy <= 1 atom in the FORT. Poll both
+                            SPCMs in parallel. On rate above threshold,
+                            break and proceed to Phase C. Polls up to
+                            max_polling_tries * loading_timeout_rounds total
+                            looks. No feedback runs inside the loop -- the
+                            caller stabilizes beams/FORT with one rebalance
+                            right before this call (just before MOT
+                            formation), matching the load_atom contract.
+      C.  Detected          shims -> off (B~0); cooling DP / repump / UV
+                            off (MOT XYZ fiber AOMs stay on -- they're
+                            shutters, no light passes when cooling DP is
+                            off); wait t_MOT_dissipation; PGC at
+                            f_cooling_deep_PGC for t_PGC_after_img;
+                            cooling/repump off again; return success.
+      D.  Timeout           cooling DP / repump / UV off; shims -> off;
+                            return atom_loaded=False.
+
+    Post-loading state contract (drop-in replacement for load_atom):
+      - FORT on at nominal_trapdepth
+      - cooling DP off, dds_repump off, ttl_repump_switch ON (block RF)
+      - MOT_X/Y/Z ON (matches load_atom; required for downstream
+        spcm_image_dual to actually deliver light to the atom)
+      - shims = "off" (B~0)
+      - UV off
+      - atom is PGC-cooled (new vs v1; v1 left the atom at MOT temperature)
+
+    Returns 7-tuple:
+      (atom_loaded, n_tries_total, n_feedback_rounds,
+       spcm1_at_load, spcm2_at_load, counts_first_unloaded, atom_loading_time_s)
+    n_feedback_rounds now counts polling rounds elapsed without detection (no
+    feedback runs in-loop); it is purely a "how many rounds did it take"
+    diagnostic. Position in the tuple is unchanged for the applet/test.
+
+    On timeout (atom_loaded=False): spcm1_at_load and spcm2_at_load are 0;
+    counts_first_unloaded carries the first polling try's (SPCM1+SPCM2) sum.
+    On success: counts_first_unloaded is also populated (first try of this
+    shot, before the atom was detected) for histogram calibration.
+    """
+    # =========================================================
+    #  Phase A: MOT loading
+    # =========================================================
+    exp.ttl_UV.on()
+    delay(1 * us)
+
+    # Idle shims for MOT
+    exp.zotino0.write_dac(0, exp.shim_X_idle)
+    exp.zotino0.write_dac(1, exp.shim_Y_idle)
+    exp.zotino0.write_dac(2, exp.shim_Z1_idle)
+    exp.zotino0.write_dac(3, exp.shim_Z2_idle)
+    exp.zotino0.load()
+    delay(1 * ms)                                 # Zotino settle
+
+    # Cooling DP at MOT frequency, repump on, MOT XYZ on, FORT on
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_MOT, amplitude=exp.amp_cooling_MOT)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    exp.dds_MOT_X.sw.on()
+    exp.dds_MOT_Y.sw.on()
+    exp.dds_MOT_Z.sw.on()
+    delay(1 * us)
+    exp.dds_FORT.set(frequency=exp.f_FORT, amplitude=exp.nominal_trapdepth)
+    exp.dds_FORT.sw.on()
+    delay(100 * us)
+
+    # MOT formation
+    # delay(exp.t_MOT2PGC)
+    delay(100 *ms)
+
+    # =========================================================
+    #  Phase B1: MOT compression
+    # =========================================================
+    # Compression shims
+    exp.zotino0.write_dac(0, exp.shim_X_compression)
+    exp.zotino0.write_dac(1, exp.shim_Y_compression)
+    exp.zotino0.write_dac(2, exp.shim_Z1_compression)
+    exp.zotino0.write_dac(3, exp.shim_Z2_compression)
+    exp.zotino0.load()
+    delay(1 * us)
+    exp.ttl_UV.off()                              # UV not needed past MOT load
+    delay(1 * us)
+
+    # Cooling DP at compression frequency
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_compress, amplitude=exp.amp_cooling_compress)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    delay(exp.t_PGC_2_off)
+
+    # =========================================================
+    #  Phase B2: Switch cooling to imaging freq, then poll
+    # =========================================================
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+
+    # Initialize diagnostics
+    t_before_atom_mu = now_mu()
+    atom_loaded = False
+    total_tries = 0
+    fb_rounds = 0
+    c0_at_load = 0
+    c1_at_load = 0
+    counts_first_unloaded = 0
+    captured_first_unloaded = False
+
+    # Outer round loop. No feedback runs between rounds: the caller does one
+    # rebalance right before this call (just before MOT formation), matching
+    # load_atom. The outer loop only bounds the total poll budget and refreshes
+    # RTIO slack between rounds. The FORT stays at nominal_trapdepth (set in
+    # Phase A) for the whole poll.
+    while (not atom_loaded) and (fb_rounds < int(exp.loading_timeout_rounds)):
+        try_n = 0
+        while (not atom_loaded) and (try_n < int(exp.max_polling_tries)):
+            delay(50 * us)                        # RTIO slack
+            with parallel:
+                exp.ttl0_counter.gate_rising(exp.t_atom_check_time)
+                exp.ttl1_counter.gate_rising(exp.t_atom_check_time)
+            c0 = exp.ttl0_counter.fetch_count()
+            c1 = exp.ttl1_counter.fetch_count()
+            try_n += 1
+            total_tries += 1
+
+            # Capture exactly one MOT-only sample per call for histogram
+            if not captured_first_unloaded:
+                counts_first_unloaded = c0 + c1
+                captured_first_unloaded = True
+
+            # Rate-based threshold (counts/s) — gate-width invariant
+            rate = 0.5 * float(c0 + c1) / exp.t_atom_check_time
+            if rate > exp.single_atom_threshold_for_loading:
+                atom_loaded = True
+                c0_at_load = c0
+                c1_at_load = c1
+                # break out of inner loop via the while-condition
+
+        if atom_loaded:
+            break
+
+        # Inner round exhausted without detection. No feedback here -- the
+        # caller stabilizes beams/FORT once before the call. The Phase B2
+        # beams are still on, so just count the round and refresh RTIO slack
+        # (fetch_count() in the inner loop drifts the timeline) before
+        # continuing to poll.
+        fb_rounds += 1
+        exp.core.break_realtime()
+
+    # =========================================================
+    #  Recover RTIO slack from fetch_count() drift in the polling loop.
+    # =========================================================
+    exp.core.break_realtime()
+
+    # =========================================================
+    #  Phase D: Timeout branch
+    # =========================================================
+    if not atom_loaded:
+        # Kill cooling light + repump (LAC stops, MOT dissipates),
+        # but keep MOT_X/Y/Z ON to match the load_atom contract so that
+        # the caller's spcm_image_dual gets light through the fibers.
+        exp.dds_cooling_DP.sw.off()
+        delay(1 * us)
+        exp.ttl_repump_switch.on()                # block repump RF
+        exp.dds_repump.sw.off()
+        delay(1 * us)
+        exp.ttl_UV.off()
+        delay(1 * us)
+        # Shims to off (B~0)
+        exp.zotino0.write_dac(0, exp.shim_X_off)
+        exp.zotino0.write_dac(1, exp.shim_Y_off)
+        exp.zotino0.write_dac(2, exp.shim_Z1_off)
+        exp.zotino0.write_dac(3, exp.shim_Z2_off)
+        exp.zotino0.load()
+        delay(1 * us)
+        return (False, total_tries, fb_rounds, 0, 0, counts_first_unloaded, 0.0)
+
+    # =========================================================
+    #  Phase C: Detected -- kill light, dissipate, PGC, return
+    # =========================================================
+    t_after_atom_mu = now_mu()
+
+    # Shims to off (B~0)
+    exp.zotino0.write_dac(0, exp.shim_X_off)
+    exp.zotino0.write_dac(1, exp.shim_Y_off)
+    exp.zotino0.write_dac(2, exp.shim_Z1_off)
+    exp.zotino0.write_dac(3, exp.shim_Z2_off)
+    exp.zotino0.load()
+    delay(1 * us)
+
+    # Kill cooling light. MOT_X/Y/Z fiber AOMs stay on (they're shutters --
+    # no light passes when cooling DP source is off). This stops LAC and
+    # lets the surrounding MOT cloud dissipate while the FORT keeps the
+    # captured atom.
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.ttl_repump_switch.on()                    # block repump RF
+    exp.dds_repump.sw.off()
+    delay(1 * us)
+    exp.ttl_UV.off()
+    delay(1 * us)
+
+    # Wait for residual MOT cloud to fall away
+    delay(exp.t_MOT_dissipation)
+
+    # PGC on the captured atom: cooling DP at deep PGC freq, repump on
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
+    exp.dds_repump.sw.on()
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+    exp.dds_cooling_DP.sw.on()
+    delay(exp.t_PGC_after_img)
+
+    # End PGC: cooling off, repump off, RF blocked. MOT_X/Y/Z stay on
+    # (load_atom contract) so the caller's confirmation imaging shot
+    # has light reaching the atom.
+    exp.dds_cooling_DP.sw.off()
+    delay(1 * us)
+    exp.dds_repump.sw.off()
+    exp.ttl_repump_switch.on()                    # block repump RF
+    delay(1 * us)
+
+    # Return success
+    t_load = exp.core.mu_to_seconds(t_after_atom_mu - t_before_atom_mu)
+    return (True, total_tries, fb_rounds, c0_at_load, c1_at_load,
+            counts_first_unloaded, t_load)
+
+
+@kernel
 def spcm_readout_single(exp, gate_time):
     """Bare single-SPCM gate on SPCM1 only. Returns count.
 

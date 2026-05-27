@@ -44,8 +44,8 @@ class DampedCosineFit(HybridFitter):
         tau0 = x_range * 10.0  # start assuming minimal decay
 
         p0 = [A0, f0, 0.0, tau0, y0_0, 2.0]
-        lo = [0.0, f0 / 20.0, -2 * np.pi, x_range * 1e-1, 0.0, 0.5]
-        hi = [1.0, f0 * 20.0, 2 * np.pi, x_range * 1e6, 1.0, 5.0]
+        lo = [0.0, f0 / 20.0, -2 * np.pi, x_range * 1e-1, 0.0, 1.0]
+        hi = [1.0, f0 * 20.0, 2 * np.pi, x_range * 1e6, 1.0, 2.0]
         return p0, lo, hi
 
     def visibility(self, result):
@@ -103,7 +103,7 @@ class RamseyFit(HybridFitter):
                 if freqs[idx] > 0:
                     f0 = freqs[idx]
 
-        tau0 = x_range
+        tau0 = x_range * 0.6
         n0 = 2.0
 
         p0 = [A0, f0, 0.0, tau0, y0_0, n0]
@@ -142,3 +142,37 @@ class RabiFit(DampedCosineFit):
     def initial_guess(self, x, y, yerr=None):
         p0, lo, hi = super().initial_guess(x, y, yerr)
         return p0[:5], lo[:5], hi[:5]
+
+    def fit_lsq(self, x, y, yerr=None, p0=None, bounds=None):
+        """Phase-robust LSQ.
+
+        Rabi data can start at any phase; a single fixed phi0 lets curve_fit
+        settle into a sub-harmonic local minimum (observed: nearly-identical
+        retention curves fitting to f vs ~0.7f, R^2 ~ 0.01). Try several
+        starting phases and keep the highest-R^2 result. phi0 = 0 is among the
+        starts, so this can only match or beat the single fixed-phase fit.
+        """
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if p0 is None or bounds is None:
+            p0a, lo, hi = self.initial_guess(x, y, yerr)
+            if p0 is None:
+                p0 = p0a
+            if bounds is None:
+                bounds = (lo, hi)
+        best = None
+        for phi0 in np.linspace(-np.pi, np.pi, 9):
+            trial = list(p0)
+            trial[2] = float(phi0)
+            res = super().fit_lsq(x, y, yerr=yerr, p0=trial, bounds=bounds)
+            if not res["success"]:
+                continue
+            yp = self.evaluate(x, res["params"])
+            ss = float(np.sum((y - yp) ** 2))
+            st = float(np.sum((y - np.mean(y)) ** 2))
+            r2 = 1.0 - ss / st if st > 0 else 0.0
+            if best is None or r2 > best[0]:
+                best = (r2, res)
+        if best is not None:
+            return best[1]
+        return super().fit_lsq(x, y, yerr=yerr, p0=p0, bounds=bounds)

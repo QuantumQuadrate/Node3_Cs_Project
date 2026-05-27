@@ -209,6 +209,39 @@ class ExperimentVariables(EnvExperiment):
         self.setattr_argument("n_measurements",  NumberValue(10, min=1, max=600000, ndecimals=0), "Detection")
 
         # =================================================================
+        #  DETERMINISTIC LOADING
+        #  Used by load_atom_deterministic() in subroutines/sequences.py.
+        #  See archive/Node1_Experiment/experiment_functions_NODE1.py
+        #  function load_MOT_and_FORT_until_atom (Node-1 reference).
+        # =================================================================
+        # Gate width per polling try. 100 us collects ~10 photons at single-atom
+        # rate (~100 kcps) and lets 100 polls fit in ~10 ms (≪ MOT lifetime).
+        # Floor at 10 us prevents RTIO underflow.
+        self.setattr_argument("t_atom_check_time",
+                              NumberValue(100e-6, min=10e-6, max=10e-3, unit="us", ndecimals=1),
+                              "Deterministic Loading")
+        # Atom-presence threshold as count rate (counts/second), gate-width
+        # invariant. Default ~1e5 cps = 10 counts per 100 us gate. Calibrate
+        # via histogram (see plan Step 4) before relying on it.
+        self.setattr_argument("single_atom_threshold_for_loading",
+                              NumberValue(1.0e5, min=1.0, max=1.0e8, ndecimals=1),
+                              "Deterministic Loading")
+        # Wait for residual MOT cloud to dissipate after MOT-off.
+        self.setattr_argument("t_MOT_dissipation",
+                              NumberValue(5e-3, min=0.0, max=1.0, unit="ms", ndecimals=2),
+                              "Deterministic Loading")
+        # Polling gates per round before triggering MOT-only feedback.
+        self.setattr_argument("max_polling_tries",
+                              NumberValue(100, min=1, max=10000, ndecimals=0),
+                              "Deterministic Loading")
+        # Failed rounds before returning atom_loaded=False (caller decides).
+        # Total budget: max_polling_tries × loading_timeout_rounds × t_atom_check_time
+        # ≈ 100 × 30 × 100 us = 300 ms polling + feedback overhead per shot.
+        self.setattr_argument("loading_timeout_rounds",
+                              NumberValue(30, min=1, max=1000, ndecimals=0),
+                              "Deterministic Loading")
+
+        # =================================================================
         #  FEEDBACK parameters are stored in config/feedback_channels.json
         #  (loaded by BaseExperiment._load_feedback_params)
         #  NOT duplicated here — edit the JSON to change feedback tuning.

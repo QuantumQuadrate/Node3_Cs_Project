@@ -50,6 +50,33 @@ def _get_results_path(experiment, name=None):
     return experiment._results_out_dir, f"{rid:09d}-{name}", rid
 
 
+def _build_metadata(experiment, rid, name):
+    """Assemble run metadata, including wall-clock start/end and duration.
+
+    start_time prefers `_wall_start_time` (stamped at run() entry by
+    record_start_time, called from initialize_hardware). It falls back to
+    `_results_start_time` (the first-save time) for experiments that never
+    call initialize_hardware. end_time and duration_seconds are computed at
+    the moment results are written, so duration reflects run() execution
+    wall-clock time, not kernel compile/load time.
+    """
+    end_dt = datetime.datetime.now()
+    start_dt = getattr(experiment, "_wall_start_time", None)
+    if start_dt is None:
+        start_dt = getattr(experiment, "_results_start_time", end_dt)
+    metadata = {
+        "rid": rid,
+        "start_time": start_dt.isoformat(),
+        "end_time": end_dt.isoformat(),
+        "duration_seconds": (end_dt - start_dt).total_seconds(),
+        "experiment": name,
+        "hostname": os.environ.get("COMPUTERNAME", "unknown"),
+    }
+    if hasattr(experiment, "_feedback_profile"):
+        metadata["feedback_profile"] = experiment._feedback_profile
+    return metadata
+
+
 @rpc(flags={"async"})
 def write_results(experiment, name=None, format="both"):
     """Save all datasets and metadata to HDF5 and/or Zarr.
@@ -71,15 +98,7 @@ def write_results(experiment, name=None, format="both"):
 
     # Collect all data once (shared between both writers)
     dataset_mgr = experiment._HasEnvironment__dataset_mgr
-    start_time = getattr(experiment, '_results_start_time', datetime.datetime.now())
-    metadata = {
-        "rid": rid,
-        "start_time": start_time.isoformat(),
-        "experiment": name,
-        "hostname": os.environ.get("COMPUTERNAME", "unknown"),
-    }
-    if hasattr(experiment, "_feedback_profile"):
-        metadata["feedback_profile"] = experiment._feedback_profile
+    metadata = _build_metadata(experiment, rid, name)
 
     local_data = _collect_local_datasets(dataset_mgr, np)
     archive_data = _collect_archive_datasets(dataset_mgr, np)
@@ -261,15 +280,7 @@ def _save_h5_now(experiment, name=None):
         name = type(experiment).__name__
 
     dataset_mgr = experiment._HasEnvironment__dataset_mgr
-    start_time = getattr(experiment, '_results_start_time', datetime.datetime.now())
-    metadata = {
-        "rid": rid,
-        "start_time": start_time.isoformat(),
-        "experiment": name,
-        "hostname": os.environ.get("COMPUTERNAME", "unknown"),
-    }
-    if hasattr(experiment, "_feedback_profile"):
-        metadata["feedback_profile"] = experiment._feedback_profile
+    metadata = _build_metadata(experiment, rid, name)
 
     local_data = _collect_local_datasets(dataset_mgr, np)
     archive_data = _collect_archive_datasets(dataset_mgr, np)
@@ -286,3 +297,16 @@ def _save_h5_now(experiment, name=None):
 def print_async(experiment, *args):
     """Non-blocking print from kernel code. Call as print_async(self, 'msg')."""
     print(*args)
+
+
+@rpc(flags={"async"})
+def record_start_time(experiment):
+    """Stamp the wall-clock start of run() onto the experiment instance.
+
+    Called once at the very start of run() (initialize_hardware does this for
+    you). Sets experiment._wall_start_time, which _build_metadata uses for the
+    HDF5 start_time / duration. The first call wins, so a re-entrant
+    initialize_hardware won't overwrite the true start.
+    """
+    if not hasattr(experiment, "_wall_start_time"):
+        experiment._wall_start_time = datetime.datetime.now()

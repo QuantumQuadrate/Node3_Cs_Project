@@ -28,6 +28,7 @@ from artiq.coredevice.ad9910 import PHASE_MODE_ABSOLUTE, PHASE_MODE_CONTINUOUS
 
 from utilities.device_aliases import register_devices, load_device_aliases
 from utilities.calibration_store import CalibrationStore
+from utilities.write_results import record_start_time
 
 
 class BaseExperiment:
@@ -149,6 +150,9 @@ class BaseExperiment:
             "exc_beam_duration_mu", "exc_spcm_gate_offset_mu",
             # Detection
             "atom_threshold", "n_measurements",
+            # Deterministic loading (see subroutines/sequences.py::load_atom_deterministic)
+            "t_atom_check_time", "single_atom_threshold_for_loading",
+            "t_MOT_dissipation", "max_polling_tries", "loading_timeout_rounds",
             # Feedback params now loaded from feedback_channels.json
             # via _load_feedback_params(), not from datasets
             # Waveplate
@@ -242,6 +246,9 @@ class BaseExperiment:
 
         exp.core.reset()
         exp.core.break_realtime()
+
+        # Stamp wall-clock run() start (async RPC; first call wins).
+        record_start_time(exp)
 
         # --- DAC ---
         exp.zotino0.init()

@@ -21,7 +21,7 @@ from artiq.experiment import *
 from utilities.base_experiment import BaseExperiment
 from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
-    background_measurement_dual, load_atom, check_atom_loaded,
+    background_measurement_dual, load_atom, load_atom_deterministic, check_atom_loaded,
     imaging_readout_dual, spcm_image_dual,
     imaging_pgc, beams_off_for_imaging,
     f3_state_prep, set_qaxis, optical_pumping_mw_scan, ramp_trap_amp,
@@ -296,10 +296,15 @@ class MicrowaveScan(EnvExperiment):
                 count2 = 0
                 load_attempts = 1
                 count1_bg, count2_bg = background_measurement_dual(self, self.t_imaging_gate)
-                load_atom(self)
+                # load_atom(self)
+                load_atom_deterministic(self)
                 imaging_pgc(self)
                 beams_off_for_imaging(self)
                 count1, count2 = spcm_image_dual(self, self.t_imaging_gate)
+
+                # === Re-cool after the imaging shot (PGC) ===
+
+                imaging_pgc(self)
 
                 # === F=3 state preparation ===
                 f3_state_prep(self)
