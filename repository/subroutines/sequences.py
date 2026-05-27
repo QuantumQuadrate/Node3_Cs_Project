@@ -1372,6 +1372,45 @@ def mw_two_step_2ph(exp, f01_hz, t01_mu, f_mw_2ph_hz, f_rf_hz, t2ph_mu):
 
 
 @kernel
+def mw_two_step_m10(exp, f00_hz, t00_mu, fm10_hz, tm10_mu):
+    """Fixed 00 pi pulse followed by scanned m10 pulse.
+
+    Used for Frequency_m10 and Time_m10 scans.
+    State starts in |F=3,mF=0> (optical pumping state).
+    Step 1: pi pulse on 00 transition |3,0> -> |4,0> (prep).
+    Step 2: probe pulse on m10 transition |4,0> <-> |3,-1> (scanned freq or duration).
+
+    Timing structure is identical to mw_two_step_11 (proven), with the 00
+    transition used as the fixed prep step instead of 01.
+    """
+    # Step 1: fixed 00 pi pulse
+    exp.dds_mw_IF.set(frequency=f00_hz, amplitude=exp.amp_mw_pulse)
+    delay(5 * us)
+    exp.ttl_MW_switch.off()
+    delay(5 * us)
+    t_rf = now_mu()
+    if t_rf > 0:
+        at_mu(t_rf)
+        exp.dds_mw_IF.sw.on()
+        at_mu(t_rf + int(t00_mu))
+        exp.dds_mw_IF.sw.off()
+        at_mu(t_rf + 100 + int(t00_mu))
+        exp.ttl_MW_switch.on()
+
+        # Step 2: scanned m10 pulse
+        at_mu(t_rf + 100 + int(t00_mu) + 1000)
+        exp.dds_mw_IF.set(frequency=fm10_hz, amplitude=exp.amp_mw_pulse)
+        at_mu(t_rf + 100 + int(t00_mu) + 11000)
+        exp.ttl_MW_switch.off()
+        at_mu(t_rf + 100 + int(t00_mu) + 11000 + 4000)
+        exp.dds_mw_IF.sw.on()
+        at_mu(t_rf + 100 + int(t00_mu) + 11000 + 4000 + int(tm10_mu))
+        exp.dds_mw_IF.sw.off()
+        at_mu(t_rf + 100 + int(t00_mu) + 11000 + 4100 + int(tm10_mu))
+        exp.ttl_MW_switch.on()
+
+
+@kernel
 def ramsey_00(exp, freq_hz, t_half_pi_mu, t_free_mu):
     """Ramsey sequence on 00 transition: pi/2 - free evolution - pi/2.
 

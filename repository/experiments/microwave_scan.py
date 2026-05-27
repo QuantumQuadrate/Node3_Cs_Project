@@ -27,7 +27,7 @@ from subroutines.sequences import (
     f3_state_prep, set_qaxis, optical_pumping_mw_scan, ramp_trap_amp,
     blowaway_mw_scan, pgc_long,
     reload_beams, reset_mw_scan,
-    mw_pulse_00, mw_pulse_01, mw_two_step_11, mw_two_step_2ph,
+    mw_pulse_00, mw_pulse_01, mw_two_step_11, mw_two_step_2ph, mw_two_step_m10,
     ramsey_00, ramsey_11, ramsey_2ph,
 )
 from utilities.write_results import write_results
@@ -44,6 +44,8 @@ MODE_TIME_2PH = 7
 MODE_RAMSEY_00 = 8
 MODE_RAMSEY_11 = 9
 MODE_RAMSEY_2PH = 10
+MODE_FREQ_M10 = 11
+MODE_TIME_M10 = 12
 
 
 class MicrowaveScan(EnvExperiment):
@@ -69,6 +71,10 @@ class MicrowaveScan(EnvExperiment):
         self.setattr_argument("Ramsey_00_Scan", BooleanValue(default=False), "Scan Mode (select one)")
         self.setattr_argument("Ramsey_11_Scan", BooleanValue(default=False), "Scan Mode (select one)")
         self.setattr_argument("Ramsey_2ph_Scan", BooleanValue(default=False), "Scan Mode (select one)")
+        # m10 transition |3,-1> <-> |4,0> (00 pi-pulse prep, then probe). Uses
+        # the Frequency Scan / Time Scan ranges like the other freq/time modes.
+        self.setattr_argument("Frequency_m10_Scan", BooleanValue(default=False), "Scan Mode (select one)")
+        self.setattr_argument("Time_m10_Scan", BooleanValue(default=False), "Scan Mode (select one)")
 
         # --- Frequency scan range (MHz, dashboard display units) ---
         self.setattr_argument("Microwave_freq_min", NumberValue(250.4, min=190.0, max=260.0, step=0.0001, ndecimals=6), group="Frequency Scan")
@@ -119,10 +125,12 @@ class MicrowaveScan(EnvExperiment):
             "f_mw_00": self.f_mw_00,
             "f_mw_01": self.f_mw_01,
             "f_mw_11": self.f_mw_11,
+            "f_mw_m10": self.f_mw_m10,
             "f_mw_parity_00": self.f_mw_parity_00,
             "t_pi_00_mu": self.t_pi_00_mu,
             "t_pi_01_mu": self.t_pi_01_mu,
             "t_pi_11_mu": self.t_pi_11_mu,
+            "t_pi_m10_mu": self.t_pi_m10_mu,
             "t_pi_2ph_mu": self.t_pi_2ph_mu,
             "rf_detune_khz": self.rf_detune_khz,
             "rf_small_detune_khz": self.rf_small_detune_khz,
@@ -158,6 +166,8 @@ class MicrowaveScan(EnvExperiment):
             (self.Ramsey_00_Scan, MODE_RAMSEY_00, "Ramsey_00", "ramsey", ""),
             (self.Ramsey_11_Scan, MODE_RAMSEY_11, "Ramsey_11", "ramsey", ""),
             (self.Ramsey_2ph_Scan, MODE_RAMSEY_2PH, "Ramsey_2ph", "ramsey", ""),
+            (self.Frequency_m10_Scan, MODE_FREQ_M10, "Freq_m10", "frequency", "f_mw_m10"),
+            (self.Time_m10_Scan, MODE_TIME_M10, "Time_m10", "time", "t_pi_m10_mu"),
         ]
         for flag, mode_id, name, mtype, target in mode_map:
             if flag:
@@ -179,6 +189,9 @@ class MicrowaveScan(EnvExperiment):
         self._t01_mu = int(self.t_pi_01_mu)
         self._t11_mu = int(self.t_pi_11_mu)
         self._t2ph_mu = int(self.t_pi_2ph_mu)
+        # m10 transition (|3,-1> <-> |4,0>): probe frequency + pi time
+        self._fm10_hz = self.f_mw_m10
+        self._tm10_mu = int(self.t_pi_m10_mu)
 
         # Two-photon derived frequencies (rf_detune_khz is raw kHz, not SI)
         f00_mhz = self._f00_hz / 1e6
@@ -350,6 +363,14 @@ class MicrowaveScan(EnvExperiment):
                     ramsey_2ph(self, self._f01_hz, self._t01_mu,
                                self._fm10_2ph_hz, self._rf_2ph_ramsey_hz,
                                self._t2ph_mu // 2, int(scan_val))
+                elif self._mode == 11:
+                    # Freq_m10: 00 pi prep, scan probe freq at fixed probe duration
+                    mw_two_step_m10(self, self._f00_hz, self._t00_mu,
+                                    scan_val, self._tm10_mu)
+                elif self._mode == 12:
+                    # Time_m10: 00 pi prep, fixed probe resonance, scan duration
+                    mw_two_step_m10(self, self._f00_hz, self._t00_mu,
+                                    self._fm10_hz, int(scan_val))
 
                 # === Blowaway + trap ramp back ===
                 blowaway_mw_scan(self, amp2)

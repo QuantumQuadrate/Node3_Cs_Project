@@ -167,6 +167,10 @@ class ExperimentVariables(EnvExperiment):
         # ("UPDATE 11 RES HERE!!" line 560). MW scan v7 used 250.972.
         self.setattr_argument("f_mw_11",           NumberValue(250.9688e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Transitions")
         self.setattr_argument("f_mw_parity_00",    NumberValue(250.978e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Transitions")
+        # m10 transition |F=3,mF=-1> <-> |F=4,mF=0> (sigma+, near the 01 line).
+        # Reached via a 00 pi-pulse prep (|3,0>->|4,0>) then this probe pulse.
+        # Default is a PLACEHOLDER seeded from f_mw_01 — calibrate via Frequency_m10 scan.
+        self.setattr_argument("f_mw_m10",          NumberValue(250.468e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Transitions")
         self.setattr_argument("amp_mw_pulse",      NumberValue(0.7,  min=0, max=1, ndecimals=3), "Microwave Transitions")
         # Pi-pulse times (machine units, unitless integers)
         self.setattr_argument("t_pi_00_mu",        NumberValue(4530,    min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
@@ -177,6 +181,9 @@ class ExperimentVariables(EnvExperiment):
         # MW scan v7 measured 5033 — recalibrate via Time_11 scan if needed.
         self.setattr_argument("t_pi_11_mu",        NumberValue(4771,    min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
         self.setattr_argument("t_pi_2ph_mu",       NumberValue(243000,  min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
+        # t_pi_m10_mu: pi time for the m10 probe pulse. PLACEHOLDER seeded from
+        # t_pi_01_mu — calibrate via Time_m10 (Rabi) scan.
+        self.setattr_argument("t_pi_m10_mu",       NumberValue(31876,   min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
         self.setattr_argument("t_pi_parity_mu",    NumberValue(4771,    min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
         # Two-photon (defaults in Hz, displayed in MHz)
         self.setattr_argument("f_mw_2ph",          NumberValue(249.383e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Two-Photon")
