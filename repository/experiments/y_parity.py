@@ -5,11 +5,12 @@ during the two-photon pulse, which rotates the measurement basis from X
 to Y on the Bloch sphere.
 
 Y-basis sequence after photon detection:
-  1. MW pi pulse on 11 transition (t_pi_parity_mu, default 5120 mu)
+  1. MW pi pulse on 11 transition (t_pi_11_mu, calibrated live via
+     the ARTIQ dashboard)
   2. Set MW IF to f_mw_2ph (249.383 MHz), RF to f_RF_2ph (0.608 MHz)
      with phase=0.25
-  3. Simultaneous MW + RF pulse for t_2ph_pulse_mu (default 106000 mu)
-     for basis rotation
+  3. Simultaneous MW + RF pulse for t_pi_2ph_mu // 2 (half the two-photon
+     pi-time, scanned live via the ARTIQ dashboard) for basis rotation
   4. Blowaway + final state readout
 
 Default dashboard values come from archive Y_Parity_Optimized_v2
@@ -17,7 +18,6 @@ Default dashboard values come from archive Y_Parity_Optimized_v2
 
 TODO (v2 optimizations not yet ported, would benefit from cross-cutting
 subroutine changes):
-  - Check_img_every: survival check every N cycles vs. every cycle
   - Asymmetric blowaway delay: 9 ms (SPCM1 branch) vs 1 ms (SPCM2 branch)
 """
 
@@ -29,9 +29,9 @@ from utilities.base_experiment import BaseExperiment
 from subroutines.k10cr1_functions import move_to_target_deg
 from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
-    background_measurement_dual, load_atom, imaging_pgc,
+    background_measurement_dual, load_atom, load_atom_deterministic, imaging_pgc,
     spcm_image_dual, beams_off_for_imaging,
-    optical_pumping_full, ramp_trap_amp, excitation_pulse,
+    ramp_trap_amp, excitation_pulse, optical_pumping_F3, optical_pumping,
     microwave_two_photon_y, blowaway_f4,
     recool_and_check_survival, pgc_between_excitations,
     final_state_readout, reset_to_mot,
@@ -52,6 +52,9 @@ class YParityExperiment(EnvExperiment):
                               group="Experiment")
         self.setattr_argument("max_excitation_cycles",
                               NumberValue(4, min=1, max=8000, step=1),
+                              group="Excitation")
+        self.setattr_argument("Check_img_every",
+                              NumberValue(12, min=1, max=8000, ndecimals=0, step=1),
                               group="Excitation")
         self.setattr_argument("t_trap_off_mu",
                               NumberValue(400, min=0, max=8000, ndecimals=0, step=1),
@@ -133,13 +136,17 @@ class YParityExperiment(EnvExperiment):
                     self.core.break_realtime()
 
                     # ===== YELLOW: Loading =====
+                    trap_ramp_end_amp = self.trap_ramp_start_amp   # safe FORT value; real value (amp3) set by the rebalancer in the load loop below
+                    amp2 = 0.0   # definite-assignment init; real value set in the load loop below
+                    count1_bg = 0   # definite-assignment init; real value set in the load loop below
+                    count2_bg = 0   # definite-assignment init; real value set in the load loop below
                     while True:
                         prepare_for_feedback(self)
                         amp0, amp1, amp2, amp3, amp4 = self.rebalancer.rebalance()
                         trap_ramp_end_amp = amp3
                         restore_after_feedback(self)
                         count1_bg, count2_bg = background_measurement_dual(self, self.t_imaging_gate)
-                        load_atom(self)
+                        load_atom_deterministic(self)
                         imaging_pgc(self)
                         beams_off_for_imaging(self)
                         delay(self.t_SPCM_exposure)
@@ -154,11 +161,39 @@ class YParityExperiment(EnvExperiment):
                     final_ts1 = 0.0
                     final_ts2 = 0.0
                     trials = 0
+                    n = 0   # cycle counter for Check_img_every gating (v2:512); definite-assignment safe int
+                    atom_alive = True   # definite-assignment init; real value set in recovery branch below
+
+                    # ONCE before retry loop (v2:516-534), hoisted out of the per-cycle loop:
+                    optical_pumping_F3(self)                       # F=3 prep (v2:516-522)
+                    self.zotino0.write_dac(0, self.shim_X_qaxis)   # Q-axis on (v2:524-530)
+                    self.zotino0.write_dac(1, self.shim_Y_qaxis)
+                    self.zotino0.write_dac(2, self.shim_Z1_qaxis)
+                    self.zotino0.write_dac(3, self.shim_Z2_qaxis)
+                    self.zotino0.load()
+                    delay(1 * ms)
+                    ramp_trap_amp(self, self.trap_ramp_start_amp,   # trap DOWN (v2:532-534)
+                                  trap_ramp_end_amp,
+                                  self.trap_ramp_steps,
+                                  self.trap_ramp_dt_us)
 
                     while True:
-                        optical_pumping_full(self)
-
+                        # Excitation cycles
+                        # v2 per-cycle order (HS_code 20260414 Y_Parity_Optimized_v2
+                        # lines 543-792): n+=1 -> shared optical pump (q-axis + trap
+                        # ramp now hoisted ONCE above the retry loop) -> excitation +
+                        # analysis pulse + blowaway. The shared optical_pumping()
+                        # reproduces the v2 pump steps exactly (minus q-axis + MW-IF,
+                        # which are now staged by the caller above/before the call).
                         for exc_cycle in range(int(self.max_excitation_cycles)):
+                            n += 1   # v2:544
+                            self.core.break_realtime()   # refresh RTIO slack each cycle (v2:559)
+
+                            # Pre-stage MW IF for the analysis pulse, then run the shared optical pump
+                            self.dds_mw_IF.set(frequency=self.f_mw_parity_00, amplitude=self.amp_mw_pulse)
+                            optical_pumping(self)
+
+                            # --- Excitation (v7:589 onward) ---
                             trials += 1
                             click1, click2, t0 = excitation_pulse(self)
 
@@ -182,19 +217,44 @@ class YParityExperiment(EnvExperiment):
                             delay(2 * us)
                             self.ttl_MW_switch.on()
                             delay(1 * us)
-                            pgc_between_excitations(self)
+
+                            # No per-cycle PGC: v2:790-792 skips pgc_between_excitations
+                            # inside the cycle loop.
 
                         if photon_detected:
                             break
 
-                        count_bg_total = count1_bg + count2_bg
-                        atom_alive = recool_and_check_survival(self, count_bg_total)
-                        if not atom_alive:
-                            break
+                        # Recovery (max cycles, no photon) -- single-recool
+                        # decomposition of v2:797-862. ramp UP every round
+                        # (v2:807-810); neither subroutine ramps the trap.
+                        self.core.break_realtime()   # rebuild RTIO slack drained by the excitation cycles
+                        ramp_trap_amp(self, trap_ramp_end_amp,
+                                      self.trap_ramp_start_amp,
+                                      self.trap_ramp_steps,
+                                      self.trap_ramp_dt_us)
+                        delay(1 * ms)
+
+                        if n % int(self.Check_img_every) == 0:
+                            n = 0
+                            # shim OFF (v2:799-805) -- recool_and_check_survival
+                            # does NOT zero shims
+                            self.zotino0.write_dac(0, self.shim_X_off)
+                            self.zotino0.write_dac(1, self.shim_Y_off)
+                            self.zotino0.write_dac(2, self.shim_Z1_off)
+                            self.zotino0.write_dac(3, self.shim_Z2_off)
+                            self.zotino0.load()
+                            delay(1 * ms)
+                            count_bg_total = count1_bg + count2_bg
+                            atom_alive = recool_and_check_survival(self, count_bg_total)   # recool+image+threshold (v2:812-847,857)
+                            if not atom_alive:
+                                break    # atom lost -> back to Yellow
+                        else:
+                            pgc_between_excitations(self)   # recool only; does its own shim-off (seq:540-545), no image (v2:812-828)
 
                     # ===== BLUE: Success =====
                     if photon_detected:
                         delay(1 * us)
+                        self.core.break_realtime()   # rebuild RTIO slack before the readout ramp
                         ramp_trap_amp(self, trap_ramp_end_amp,
                                       self.trap_ramp_start_amp,
                                       self.trap_ramp_steps,
@@ -225,3 +285,13 @@ class YParityExperiment(EnvExperiment):
         self.append_to_dataset("counts_background", counts_bg)
         self.append_to_dataset("HWP_angles", hwp)
         self.append_to_dataset("QWP_angles", qwp)
+        # Intermediate HDF5 save (mirrors microwave_scan's incremental save)
+        self._incremental_save()
+
+    def _incremental_save(self):
+        """Write current datasets to HDF5 mid-run (mirrors microwave_scan)."""
+        try:
+            from utilities.write_results import _save_h5_now
+            _save_h5_now(self)
+        except Exception as e:
+            print("[incremental save]", e)

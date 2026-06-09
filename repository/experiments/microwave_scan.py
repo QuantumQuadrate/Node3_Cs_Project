@@ -22,10 +22,10 @@ from utilities.base_experiment import BaseExperiment
 from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
     background_measurement_dual, load_atom, load_atom_deterministic, check_atom_loaded,
-    imaging_readout_dual, spcm_image_dual,
+    spcm_image_dual,
     imaging_pgc, beams_off_for_imaging,
-    f3_state_prep, set_qaxis, optical_pumping_mw_scan, ramp_trap_amp,
-    blowaway_mw_scan, pgc_long,
+    optical_pumping_F3, set_qaxis, optical_pumping, ramp_trap_amp,
+    blowaway_f4, final_state_readout,
     reload_beams, reset_mw_scan,
     mw_pulse_00, mw_pulse_01, mw_two_step_11, mw_two_step_2ph, mw_two_step_m10,
     ramsey_00, ramsey_11, ramsey_2ph,
@@ -318,9 +318,10 @@ class MicrowaveScan(EnvExperiment):
                 # === Re-cool after the imaging shot (PGC) ===
 
                 imaging_pgc(self)
+                beams_off_for_imaging(self)   # block repump before F=3 prep (matches parity)
 
-                # === F=3 state preparation ===
-                f3_state_prep(self)
+                # === F=3 state preparation (unified: parity's optical_pumping_F3) ===
+                optical_pumping_F3(self)
 
                 # === Q-axis → trap ramp down → optical pumping ===
                 set_qaxis(self, self.shim_X_qaxis, self.shim_Y_qaxis,
@@ -328,7 +329,7 @@ class MicrowaveScan(EnvExperiment):
                 ramp_trap_amp(self, self.trap_ramp_start_amp, trap_ramp_end_amp,
                               self.trap_ramp_steps, self.trap_ramp_dt_us)
                 delay(1 * ms)
-                optical_pumping_mw_scan(self)
+                optical_pumping(self)
 
                 # === MODE DISPATCH: MW pulse ===
                 if self._mode == 0:
@@ -373,19 +374,13 @@ class MicrowaveScan(EnvExperiment):
                                     self._fm10_hz, int(scan_val))
 
                 # === Blowaway + trap ramp back ===
-                blowaway_mw_scan(self, amp2)
+                blowaway_f4(self, amp2)
                 ramp_trap_amp(self, trap_ramp_end_amp, self.trap_ramp_start_amp,
                               self.trap_ramp_steps, self.trap_ramp_dt_us)
                 delay(1 * ms)
 
-                # === Long PGC after blowaway ===
-                pgc_long(self)
-
-                # === Shot 2: final state readout (dual SPCM) ===
-                count1_post, count2_post = imaging_readout_dual(self, self.t_imaging_gate)
-                # Alternate: spcm_image_dual(self, self.t_imaging_gate) — bare
-                # parallel SPCM gates without imaging-beam restoration; swap in
-                # for dual-SPCM mismatch debugging.
+                # === Recool + final state readout (unified: parity's final_state_readout) ===
+                count1_post, count2_post = final_state_readout(self)
 
                 # === Save data ===
                 delay(1 * ms)

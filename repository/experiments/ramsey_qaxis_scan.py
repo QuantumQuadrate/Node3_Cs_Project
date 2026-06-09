@@ -29,9 +29,8 @@ from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
     background_measurement_dual, load_atom_deterministic,
     imaging_pgc, beams_off_for_imaging, spcm_image_dual,
-    imaging_readout_dual,
-    f3_state_prep, set_qaxis, optical_pumping_mw_scan, ramp_trap_amp,
-    blowaway_mw_scan, pgc_long, reset_mw_scan,
+    optical_pumping_F3, set_qaxis, optical_pumping, ramp_trap_amp,
+    blowaway_f4, final_state_readout, reset_mw_scan,
     ramsey_00, ramsey_2ph,
 )
 from utilities.write_results import write_results
@@ -316,14 +315,15 @@ class RamseyQaxisScan(EnvExperiment):
 
                     # === Re-cool after the imaging shot (PGC) -- coherence fix ===
                     imaging_pgc(self)
+                    beams_off_for_imaging(self)   # block repump before F=3 prep (matches parity)
 
-                    # === F=3 prep -> per-field Q-axis -> trap ramp -> optical pump ===
-                    f3_state_prep(self)
+                    # === F=3 prep (unified: parity's optical_pumping_F3) -> Q-axis -> trap ramp -> optical pump ===
+                    optical_pumping_F3(self)
                     set_qaxis(self, sx, sy, sz1, sz2)
                     ramp_trap_amp(self, self.trap_ramp_start_amp, trap_ramp_end_amp,
                                   self.trap_ramp_steps, self.trap_ramp_dt_us)
                     delay(1 * ms)
-                    optical_pumping_mw_scan(self)
+                    optical_pumping(self)
 
                     # === Ramsey pulse (mode dispatch) ===
                     if self._mode == 0:            # MODE_RAMSEY_00
@@ -331,15 +331,14 @@ class RamseyQaxisScan(EnvExperiment):
                     elif self._mode == 1:          # MODE_RAMSEY_2PH
                         ramsey_2ph(self, f01_hz, t01, fm10, rf2, th2, int(free_t))
 
-                    # === Blowaway -> trap ramp back -> long PGC ===
-                    blowaway_mw_scan(self, amp2)
+                    # === Blowaway -> trap ramp back ===
+                    blowaway_f4(self, amp2)
                     ramp_trap_amp(self, trap_ramp_end_amp, self.trap_ramp_start_amp,
                                   self.trap_ramp_steps, self.trap_ramp_dt_us)
                     delay(1 * ms)
-                    pgc_long(self)
 
-                    # === Shot 2: final readout ===
-                    count1_post, count2_post = imaging_readout_dual(self, self.t_imaging_gate)
+                    # === Recool + final readout (unified: parity's final_state_readout) ===
+                    count1_post, count2_post = final_state_readout(self)
 
                     # === Save ===
                     delay(1 * ms)

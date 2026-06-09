@@ -15,7 +15,7 @@ from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
     background_measurement_dual, load_atom, imaging_pgc,
     spcm_image_dual, beams_off_for_imaging,
-    optical_pumping_full, excitation_pulse, reset_to_mot,
+    excitation_pulse, reset_to_mot,
 )
 from utilities.write_results import write_results
 
