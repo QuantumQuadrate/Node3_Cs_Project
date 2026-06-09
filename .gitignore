@@ -66,3 +66,20 @@ env/
 credentials.json
 .env
 .env.local
+
+# ============================================================
+#  Claude Code local state
+# ============================================================
+# Per-machine settings (permissions, local paths). The shared agent
+# definitions in .claude/agents/ ARE tracked; only the local file is not.
+.claude/settings.local.json
+
+# ============================================================
+#  Archived reference binaries
+# ============================================================
+# Papers, manuals, and slides under archive/ are kept locally for reference
+# but excluded from version control: they are downloadable, regenerable, and
+# would bloat history (~73 MB). The annotated archive/AMO_Physic_Ref/
+# references_index.md and ALL reference *source code* remain tracked.
+*.pdf
+*.pptx
