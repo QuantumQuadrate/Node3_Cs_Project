@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
 # Import device_db from project root (useful_codes/)
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+# launcher lives at useful_codes/repository/ndsp/k10cr1/, so go up 3 levels.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from device_db import device_db
 
 
