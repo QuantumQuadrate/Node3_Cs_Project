@@ -126,7 +126,6 @@ class MicrowaveScan(EnvExperiment):
             "f_mw_01": self.f_mw_01,
             "f_mw_11": self.f_mw_11,
             "f_mw_m10": self.f_mw_m10,
-            "f_mw_parity_00": self.f_mw_parity_00,
             "t_pi_00_mu": self.t_pi_00_mu,
             "t_pi_01_mu": self.t_pi_01_mu,
             "t_pi_11_mu": self.t_pi_11_mu,

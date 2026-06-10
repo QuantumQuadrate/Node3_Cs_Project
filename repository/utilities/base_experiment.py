@@ -133,7 +133,7 @@ class BaseExperiment:
             "f_cooling_reload", "amp_cooling_reload",
             "t_PGC_after_blowaway",
             # Microwave
-            "f_mw_00", "f_mw_01", "f_mw_11", "f_mw_m10", "f_mw_parity_00",
+            "f_mw_00", "f_mw_01", "f_mw_11", "f_mw_m10",
             "t_pi_00_mu", "t_pi_01_mu", "t_pi_11_mu", "t_pi_m10_mu", "t_pi_2ph_mu",
             "amp_mw_pulse",
             "f_mw_2ph", "f_RF_2ph", "amp_RF_2ph",

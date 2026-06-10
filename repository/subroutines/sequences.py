@@ -232,7 +232,17 @@ def optical_pumping(exp):
         exp.dds_MOT_Z.sw.off()
     delay(3 * us)
 
-
+@kernel
+def turn_fiber_aom_on(exp):
+    """Turn on the MOT X/Y/Z fiber AOMs for the PGC/imaging path."""
+    exp.dds_D1_onoff_L.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_X.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Y.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Z.sw.on()
+    delay(1 * us)
 # =========================================================================
 #  TRAP RAMP
 # =========================================================================
@@ -267,10 +277,18 @@ def ramp_trap_amp(exp, start_amp, end_amp, n_steps, dt_us):
 
 @kernel
 def excitation_pulse(exp):
-    """Single excitation attempt with trap-off/on and SPCM timestamp collection.
+    """Single excitation attempt with trap-off/on; opens the SPCM collection
+    gate and returns (t_end1, t_end2, t0) WITHOUT reading the timestamps.
 
-    Returns (SPCM1_click_time_mu, SPCM2_click_time_mu, t0_mu).
-    Negative click_time means no photon detected.
+    The caller must read the SPCM timestamps itself, immediately, so the
+    post-detection analysis pulse (anchored at click + 2000 mu) fires with
+    minimal CPU between the gate-close read and the first MW edge. An empty
+    SPCM timestamp_mu blocks until the gate closes, pinning the wall clock
+    with ~0 slack; if a function return + dispatch sit in that window the
+    click+2000 anchor underflows.
+
+    Returns (t_end1, t_end2, t0): int64 machine-unit SPCM1/SPCM2 gate-end
+    times (pass to ttl_SPCMx.timestamp_mu) and the excitation reference t0.
     """
     exp.dds_excitation.set(frequency=exp.f_excitation_pulse, amplitude=exp.amp_excitation_pulse)
     delay(5 * us)
@@ -316,11 +334,10 @@ def excitation_pulse(exp):
         t_end1 = exp.ttl_SPCM1.gate_rising(exp.t_spcm_collection_mu * ns)
         t_end2 = exp.ttl_SPCM2.gate_rising(exp.t_spcm_collection_mu * ns)
 
-    click1 = exp.ttl_SPCM1.timestamp_mu(t_end1)
-    click2 = exp.ttl_SPCM2.timestamp_mu(t_end2)
-    delay(5 * us)
-
-    return click1, click2, t0
+    # Reads moved to the caller (see docstring): returning the gate-end times
+    # keeps the function-return boundary OUT of the slack-critical window
+    # between the gate-close read and the post-detection MW pulse.
+    return t_end1, t_end2, t0
 
 
 # =========================================================================
@@ -486,12 +503,6 @@ def recool_and_check_survival(exp, count_bg: TInt32) -> TBool:
 
     Returns True if atom is still present (counts above threshold).
     """
-    exp.dds_D1_onoff_L.sw.on()
-    delay(1 * us)
-    exp.dds_repump.sw.on()
-    delay(1 * us)
-    exp.ttl_repump_switch.off()         # unblock repump
-
     # Imaging
     exp.dds_cooling_DP.set(frequency=exp.f_cooling_imaging, amplitude=exp.amp_cooling_imaging)
     exp.dds_cooling_DP.sw.on()
@@ -509,7 +520,7 @@ def recool_and_check_survival(exp, count_bg: TInt32) -> TBool:
     delay(10 * us)
     delay(exp.t_PGC_after_img)
 
-    beams_off_for_imaging(exp)
+    
 
     return (count1 + count2 - count_bg) > exp.atom_threshold
 
@@ -589,13 +600,27 @@ def reset_to_mot(exp):
 
 @kernel
 def final_state_readout(exp):
-    """Post-blowaway PGC + dual SPCM imaging for final state detection.
+    """PGC + dual SPCM imaging for final-state / survival detection.
+
+    Self-sufficient: turns on its own imaging beams (cooling DP, the MOT X/Y/Z
+    fiber AOMs the imaging light reaches the atom through, the D1 on/off PGC
+    beam, and repump) so it works whether or not the caller ran blowaway_f4.
+    optical_pumping / optical_pumping_F3 leave MOT X/Y/Z and D1_onoff_L OFF;
+    without reopening them here, a caller that skips blowaway (e.g.
+    excitation_scan) would image into a closed fiber AOM -> shot2~bg -> a false
+    0% retention.
 
     Returns (count1, count2) for the final readout.
     """
-    # PGC
+    # PGC -- open every beam the PGC + imaging needs (cooling DP, the MOT fiber
+    # AOMs, D1_onoff_L, repump) so the readout owns its own beam setup.
     exp.dds_cooling_DP.set(frequency=exp.f_cooling_deep_PGC, amplitude=exp.amp_cooling_deep_PGC)
     exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_X.sw.on()
+    exp.dds_MOT_Y.sw.on()
+    exp.dds_MOT_Z.sw.on()
+    exp.dds_D1_onoff_L.sw.on()
     delay(1 * us)
     exp.dds_repump.sw.on()
     delay(1 * us)
@@ -810,7 +835,7 @@ def load_atom_deterministic(exp):
     exp.zotino0.load()
     delay(1 * ms)                                 # Zotino settle
 
-    # Cooling DP at MOT frequency, repump on, MOT XYZ on, FORT on
+    # Cooling DP at MOT frequency, repump on, MOT XYZ on, D1_onoff_L on, FORT on
     exp.dds_cooling_DP.set(frequency=exp.f_cooling_MOT, amplitude=exp.amp_cooling_MOT)
     exp.dds_cooling_DP.sw.on()
     delay(1 * us)
@@ -820,6 +845,13 @@ def load_atom_deterministic(exp):
     exp.dds_MOT_X.sw.on()
     exp.dds_MOT_Y.sw.on()
     exp.dds_MOT_Z.sw.on()
+    delay(1 * us)
+    # D1_onoff_L / PGC beam is "always on during MOT/PGC". optical_pumping_F3
+    # switches it OFF and historically only blowaway_f4 switched it back ON, so
+    # an experiment that skips blowaway (e.g. excitation_scan) would otherwise
+    # load with this beam stuck off -> no MOT/PGC -> no atom. Guarantee it on
+    # here so the loader never depends on the prior step having restored it.
+    exp.dds_D1_onoff_L.sw.on()
     delay(1 * us)
     exp.dds_FORT.set(frequency=exp.f_FORT, amplitude=exp.nominal_trapdepth)
     exp.dds_FORT.sw.on()

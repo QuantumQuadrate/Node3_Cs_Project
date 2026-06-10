@@ -166,7 +166,6 @@ class ExperimentVariables(EnvExperiment):
         # f_mw_11 default from HS_code_20260416_Z_Parity_Optimized_v2.py
         # ("UPDATE 11 RES HERE!!" line 560). MW scan v7 used 250.972.
         self.setattr_argument("f_mw_11",           NumberValue(250.9688e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Transitions")
-        self.setattr_argument("f_mw_parity_00",    NumberValue(250.978e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Transitions")
         # m10 transition |F=3,mF=-1> <-> |F=4,mF=0> (sigma+, near the 01 line).
         # Reached via a 00 pi-pulse prep (|3,0>->|4,0>) then this probe pulse.
         # Default is a PLACEHOLDER seeded from f_mw_01 — calibrate via Frequency_m10 scan.
@@ -176,7 +175,7 @@ class ExperimentVariables(EnvExperiment):
         self.setattr_argument("t_pi_00_mu",        NumberValue(4530,    min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
         self.setattr_argument("t_pi_01_mu",        NumberValue(31876,   min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
         # t_pi_11_mu: pi rotation on the 11 transition. Also used as the
-        # parity pi pulse (x/y/z_parity). Default 4771 from
+        # parity pi pulse (parity.py, all of X/Y/Z). Default 4771 from
         # HS_code_20260416_Z_Parity_Optimized_v2.py (newest calibration).
         # MW scan v7 measured 5033 — recalibrate via Time_11 scan if needed.
         self.setattr_argument("t_pi_11_mu",        NumberValue(4771,    min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
