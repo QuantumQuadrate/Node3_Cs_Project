@@ -429,7 +429,7 @@ def microwave_two_photon_y(exp, click_time_mu):
     at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 15000 + 3300)
     exp.dds_RF.set(frequency=exp.f_RF_2ph, phase=0.25, amplitude=exp.amp_RF_2ph)
 
-    # Step 3: simultaneous MW + RF pulse
+    # Step 3: simultaneous MW + RF pulse 2 photon transition
     at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 25000 + 3300)
     exp.ttl_MW_switch.off()             # unblock MW
     at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 25000 + 4000 + 3300)

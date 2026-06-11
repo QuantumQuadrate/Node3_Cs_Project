@@ -183,9 +183,13 @@ class ExperimentVariables(EnvExperiment):
         # t_pi_m10_mu: pi time for the m10 probe pulse. PLACEHOLDER seeded from
         # t_pi_01_mu — calibrate via Time_m10 (Rabi) scan.
         self.setattr_argument("t_pi_m10_mu",       NumberValue(31876,   min=0, max=1e7, ndecimals=0), "Microwave Pi-Pulse Times (mu)")
-        # Two-photon (defaults in Hz, displayed in MHz)
-        self.setattr_argument("f_mw_2ph",          NumberValue(249.383e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Two-Photon")
-        self.setattr_argument("f_RF_2ph",          NumberValue(0.6081e6,  min=0, max=10e6, unit="MHz", ndecimals=6), "Microwave Two-Photon")
+        # Two-photon (defaults in Hz, displayed in MHz).
+        # f_mw_2ph / f_RF_2ph are now DERIVED in the experiment from f_mw_00,
+        # f_mw_01, rf_detune_khz, rf_small_detune_khz (parity.py prepare /
+        # microwave_scan.py). Kept commented as an artifact in case we want to
+        # revert to independent inputs.
+        # self.setattr_argument("f_mw_2ph",          NumberValue(249.383e6, min=190e6, max=260e6, unit="MHz", ndecimals=6), "Microwave Two-Photon")
+        # self.setattr_argument("f_RF_2ph",          NumberValue(0.6081e6,  min=0, max=10e6, unit="MHz", ndecimals=6), "Microwave Two-Photon")
         self.setattr_argument("amp_RF_2ph",        NumberValue(0.6,   min=0, max=1, ndecimals=3), "Microwave Two-Photon")
         self.setattr_argument("rf_detune_khz",     NumberValue(-125.0, min=-1000, max=1000, ndecimals=3), "Microwave Two-Photon")
         self.setattr_argument("rf_small_detune_khz", NumberValue(-9.33, min=-100, max=100, ndecimals=3), "Microwave Two-Photon")

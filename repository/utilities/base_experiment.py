@@ -136,7 +136,10 @@ class BaseExperiment:
             "f_mw_00", "f_mw_01", "f_mw_11", "f_mw_m10",
             "t_pi_00_mu", "t_pi_01_mu", "t_pi_11_mu", "t_pi_m10_mu", "t_pi_2ph_mu",
             "amp_mw_pulse",
-            "f_mw_2ph", "f_RF_2ph", "amp_RF_2ph",
+            # f_mw_2ph / f_RF_2ph are derived in parity.prepare() (artifact,
+            # see experiment_variables.py) -- not loaded as datasets:
+            # "f_mw_2ph", "f_RF_2ph",
+            "amp_RF_2ph",
             "rf_detune_khz", "rf_small_detune_khz",
             # Optical pumping
             "f_pump_D1", "amp_pump_D1",
@@ -270,7 +273,7 @@ class BaseExperiment:
         exp.urukul0_ch1.init()
         exp.urukul0_ch2.init()
         exp.urukul0_ch3.init()
-        # urukul1_ch0 (RF antenna) deliberately NOT initialized — matches original
+        exp.urukul1_ch0.init()
         exp.urukul1_ch1.init()
         exp.urukul1_ch2.init()
         exp.urukul1_ch3.init()
@@ -315,6 +318,9 @@ class BaseExperiment:
 
         # Urukul1
         # urukul1_ch0 (RF antenna) NOT touched — original deliberately skips it
+        exp.urukul1_ch0.set(frequency=2e6, amplitude=0.01)  # dummy values to avoid errors; will be reconfigured by rebalancer
+        exp.urukul1_ch0.sw.off()
+        
         delay(1 * us)
         exp.urukul1_ch1.set(frequency=exp.f_FORT, amplitude=exp.nominal_trapdepth)
         exp.urukul1_ch1.sw.on()
@@ -342,6 +348,8 @@ class BaseExperiment:
 
         # --- Phase modes (only urukul0_ch0, NOT urukul1_ch0) ---
         exp.urukul0_ch0.set_phase_mode(PHASE_MODE_CONTINUOUS)
+        delay(1 * us)
+        exp.urukul1_ch0.set_phase_mode(PHASE_MODE_ABSOLUTE)
         delay(1 * us)
 
         # --- UV ON at init (increases MOT atom density) ---

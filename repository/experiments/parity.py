@@ -108,6 +108,19 @@ class ParityExperiment(EnvExperiment):
     def prepare(self):
         self.base.prepare(feedback_profile="low_FORT")
 
+        # Two-photon frequencies are DERIVED from the transition frequencies +
+        # detunings (no longer independent inputs) -- identical formula to
+        # microwave_scan.py:195-201 (_fm10_2ph_hz / _rf_2ph_hz). Arithmetic in
+        # MHz, converted to Hz once at the end (dds.set expects Hz).
+        f00_mhz = self.f_mw_00 / 1e6                           # Hz  -> MHz
+        f01_mhz = self.f_mw_01 / 1e6                           # Hz  -> MHz
+        detune_mhz = self.rf_detune_khz / 1000.0              # kHz -> MHz
+        small_detune_mhz = self.rf_small_detune_khz / 1000.0  # kHz -> MHz
+        self.f_mw_2ph = (2.0 * f00_mhz - f01_mhz + detune_mhz) * 1e6
+        self.f_RF_2ph = (f01_mhz - f00_mhz - detune_mhz + small_detune_mhz) * 1e6
+        self.set_dataset("f_mw_2ph", self.f_mw_2ph, broadcast=True)
+        self.set_dataset("f_RF_2ph", self.f_RF_2ph, broadcast=True)
+
         # Map the basis selector to a kernel-safe int (the kernel branches on
         # this int only, never on the string).
         if self.basis_axis == "X":
