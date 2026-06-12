@@ -66,6 +66,12 @@ def imaging_pgc(exp):
     exp.dds_cooling_DP.sw.on()
     delay(exp.t_PGC_after_img)
 
+@kernel
+def imaging_pgc_low_trap(exp):
+    """Short PGC before SPCM readout."""
+    exp.dds_cooling_DP.set(frequency=exp.f_cooling_PGC, amplitude=exp.amp_cooling_PGC)
+    exp.dds_cooling_DP.sw.on()
+    delay(exp.t_PGC_after_img)
 
 # =========================================================================
 #  SPCM IMAGING

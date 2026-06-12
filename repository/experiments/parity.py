@@ -32,7 +32,7 @@ from utilities.base_experiment import BaseExperiment
 from subroutines.k10cr1_functions import move_to_target_deg
 from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
-    background_measurement_dual, load_atom_deterministic, imaging_pgc,
+    background_measurement_dual, load_atom_deterministic, imaging_pgc, imaging_pgc_low_trap,
     spcm_image_dual, beams_off_for_imaging,
     ramp_trap_amp, excitation_pulse, optical_pumping_F3, optical_pumping,
     microwave_pi_pulse_z, microwave_two_photon_x, microwave_two_photon_y, blowaway_f4,
@@ -167,21 +167,22 @@ class ParityExperiment(EnvExperiment):
     @kernel
     def run(self):
         self.base.initialize_hardware()
-        delay(1000 * ms)
+        # delay(1000 * ms)
+        self.core.break_realtime()
 
         for qwp in self.QWP_scan:
             delay(100 * ms)
             move_to_target_deg(self, name="852_QWP", target_deg=qwp)
-            delay(15000 * ms)
+            delay(5000 * ms)
             self.core.break_realtime()
 
             for hwp in self.HWP_scan:
                 delay(100 * ms)
                 move_to_target_deg(self, name="852_HWP", target_deg=hwp)
                 if hwp == self.HWP_scan[0]:
-                    delay(15000 * ms)
+                    delay(9000 * ms)
                 else:
-                    delay(5000 * ms)
+                    delay(3000 * ms)
                 self.core.break_realtime()
 
                 measurements = 0
@@ -239,10 +240,11 @@ class ParityExperiment(EnvExperiment):
                         self.zotino0.write_dac(3, self.shim_Z2_qaxis)
                         self.zotino0.load()
                         delay(1 * ms)
-                        ramp_trap_amp(self, self.trap_ramp_start_amp,   # trap DOWN (v2:532-534)
-                                    trap_ramp_end_amp,
-                                    self.trap_ramp_steps,
-                                    self.trap_ramp_dt_us)
+                        if n == 0:   # hoist trap ramp ONCE above the retry loop (v2:532-534) -- v1 had it inside the loop, so it ran every cycle
+                            ramp_trap_amp(self, self.trap_ramp_start_amp,   # trap DOWN (v2:532-534)
+                                        trap_ramp_end_amp,
+                                        self.trap_ramp_steps,
+                                        self.trap_ramp_dt_us)
 
                         # Excitation cycles
                         # v2 per-cycle order (archive {Z,Y}_Parity_Optimized_v2
@@ -328,23 +330,23 @@ class ParityExperiment(EnvExperiment):
                         self.zotino0.load()
                         delay(1 * ms)
                         
-                        ramp_trap_amp(self, trap_ramp_end_amp,
-                                      self.trap_ramp_start_amp,
-                                      self.trap_ramp_steps,
-                                      self.trap_ramp_dt_us)
                         turn_fiber_aom_on(self)   # PGC/imaging path ON for recovery (v2:805-806)
                         
                         delay(1 * us)
                         self.dds_repump.sw.on()
                         delay(1 * us)
                         self.ttl_repump_switch.off()         # unblock repump
-                        imaging_pgc(self)
+                        imaging_pgc_low_trap(self)
 
                         if n % int(self.Check_img_every) == 0:
                             n = 0
                             # shim OFF (v2:799-805) -- recool_and_check_survival
                             # does NOT zero shims
-
+                            ramp_trap_amp(self, trap_ramp_end_amp,
+                                self.trap_ramp_start_amp,
+                                self.trap_ramp_steps,
+                                self.trap_ramp_dt_us)
+                            
                             delay(1 * ms)
                             count_bg_total = count1_bg + count2_bg
                             atom_alive = recool_and_check_survival(self, count_bg_total)   # recool+image+threshold (v2:812-847,857)
