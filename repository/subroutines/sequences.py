@@ -107,6 +107,53 @@ def spcm_image_dual(exp, gate_time):
 
 
 @kernel
+def image_low_trap(exp, f, amp, gate_time):
+    """Dual-SPCM fluorescence image with a SCANNED cooling-DP (f, amp).
+
+    Identical to spcm_image_dual but the imaging frequency/amplitude are ARGUMENTS
+    (spcm_image_dual hard-codes f_cooling_imaging/amp_cooling_imaging), so the caller
+    can scan the imaging condition -- e.g. imaging at the LOW trap. The caller must
+    open the fiber-AOM imaging path (turn_fiber_aom_on) and set B~0 (shim_off) BEFORE
+    this, and run beams_off_for_imaging AFTER. Repump is managed here (as in
+    spcm_image_dual). Images at whatever trap depth is currently set.
+
+    Returns (count1, count2).
+    """
+    # Imaging beams on (cooling + repump) at the SCANNED (f, amp)
+    exp.dds_cooling_DP.set(frequency=f, amplitude=amp)
+    exp.dds_cooling_DP.sw.on()
+    delay(1 * us)
+    exp.dds_repump.sw.on()
+    exp.ttl_repump_switch.off()
+    delay(1 * us)
+
+    with parallel:
+        tend1 = exp.ttl_SPCM1.gate_rising(gate_time)
+        tend2 = exp.ttl_SPCM2.gate_rising(gate_time)
+    count1 = exp.ttl_SPCM1.count(tend1)
+    count2 = exp.ttl_SPCM2.count(tend2)
+    delay(100 * us)
+
+    return count1, count2
+
+@kernel
+def recool_and_check_survival_lowtrap(exp) -> TBool:
+    """PGC recooling + dual SPCM imaging for atom survival check.
+
+    Returns True if atom is still present (counts above threshold).
+    """
+    # Imaging
+    count1, count2 = image_low_trap(exp, exp.f_cooling_imaging_lowtrap, exp.amp_cooling_imaging_lowtrap, exp.t_imaging_gate_lowtrap)
+    delay(10 * us)
+
+    # PGC
+    imaging_pgc_low_trap(exp)
+
+
+    return (count1 + count2) > exp.atom_threshold_lowtrap
+
+
+@kernel
 def spcm_image_dual_sequential(exp, gate_time):
     """Dual-SPCM fluorescence imaging with sequential gating.
 
@@ -237,6 +284,54 @@ def optical_pumping(exp):
         exp.dds_MOT_Y.sw.off()
         exp.dds_MOT_Z.sw.off()
     delay(3 * us)
+
+
+@kernel
+def optical_pumping_timed(exp, t_pump):
+    """optical_pumping() with the pump-window length as a kernel ARGUMENT.
+
+    Byte-for-byte identical to optical_pumping() EXCEPT the pump window is
+    delay(t_pump) (t_pump in SECONDS) instead of delay(exp.t_optical_pump).
+    Deliberate parallel copy so a scan (OpticalPumpScan) can sweep the pumping
+    time WITHOUT modifying optical_pumping() (whose pump window is a compile-time
+    constant). Caller contract identical to optical_pumping(): set the Q-axis
+    (set_qaxis) BEFORE calling.
+    """
+    # MOT fiber beams on for recooling during pump
+    exp.dds_MOT_X.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Y.sw.on()
+    delay(1 * us)
+    exp.dds_MOT_Z.sw.on()
+    delay(1 * us)
+    # D1 pump
+    exp.dds_D1_pump.set(frequency=exp.f_pump_D1, amplitude=exp.amp_pump_D1)
+    exp.dds_D1_pump.sw.on()
+    delay(6 * us)
+    # Excitation for pumping
+    exp.dds_excitation.set(frequency=exp.f_pump_excitation, amplitude=exp.amp_pump_excitation)
+    exp.dds_excitation.sw.on()
+    delay(6 * us)
+    # Pump repumper
+    exp.dds_pump_repumper.set(frequency=exp.f_pump_repumper, amplitude=exp.amp_pump_repumper_active)
+    exp.dds_pump_repumper.sw.on()
+    delay(6 * us)
+    # Unblock D1/excitation path + SCANNED pump window
+    exp.ttl_D1_exc_switch.off()
+    delay(t_pump)                       # <-- scanned pump window (seconds)
+    # Shut everything off simultaneously (incl MOT fiber beams)
+    t_end = now_mu()
+    at_mu(t_end + 1000)
+    with parallel:
+        exp.ttl_D1_exc_switch.on()
+        exp.dds_D1_pump.sw.off()
+        exp.dds_excitation.sw.off()
+        exp.dds_pump_repumper.sw.off()
+        exp.dds_MOT_X.sw.off()
+        exp.dds_MOT_Y.sw.off()
+        exp.dds_MOT_Z.sw.off()
+    delay(3 * us)
+
 
 @kernel
 def turn_fiber_aom_on(exp):

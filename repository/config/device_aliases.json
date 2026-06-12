@@ -35,9 +35,7 @@
             "device": "urukul1_ch0",
             "cpld": "urukul1_cpld",
             "description": "RF antenna for two-photon transitions",
-            "phase_mode": "absolute",
-            "dataset_freq": "f_RF",
-            "dataset_amp": "amp_RF"
+            "phase_mode": "absolute"
         },
         "dds_FORT": {
             "device": "urukul1_ch1",

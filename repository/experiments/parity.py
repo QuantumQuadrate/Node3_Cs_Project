@@ -36,7 +36,7 @@ from subroutines.sequences import (
     spcm_image_dual, beams_off_for_imaging,
     ramp_trap_amp, excitation_pulse, optical_pumping_F3, optical_pumping,
     microwave_pi_pulse_z, microwave_two_photon_x, microwave_two_photon_y, blowaway_f4,
-    recool_and_check_survival, pgc_between_excitations,
+    recool_and_check_survival, pgc_between_excitations, recool_and_check_survival_lowtrap,
     final_state_readout, reset_to_mot, turn_fiber_aom_on
 )
 from utilities.write_results import write_results
@@ -319,9 +319,11 @@ class ParityExperiment(EnvExperiment):
                         if photon_detected:
                             break
 
-                        # Recovery (max cycles, no photon) -- single-recool
-                        # decomposition of v2:797-862. ramp UP every round
-                        # (v2:807-810); neither subroutine ramps the trap.
+                        # Recovery (max cycles, no photon): PGC-recool at the LOW
+                        # trap every round (imaging_pgc_low_trap, no ramp-up); the
+                        # periodic survival image (every Check_img_every, below) is
+                        # also at the low trap. Restructured from v2:797-862, which
+                        # ramped UP to image every round.
                         self.core.break_realtime()   # rebuild RTIO slack drained by the excitation cycles
                         self.zotino0.write_dac(0, self.shim_X_off)
                         self.zotino0.write_dac(1, self.shim_Y_off)
@@ -339,17 +341,14 @@ class ParityExperiment(EnvExperiment):
                         imaging_pgc_low_trap(self)
 
                         if n % int(self.Check_img_every) == 0:
-                            n = 0
-                            # shim OFF (v2:799-805) -- recool_and_check_survival
-                            # does NOT zero shims
-                            ramp_trap_amp(self, trap_ramp_end_amp,
-                                self.trap_ramp_start_amp,
-                                self.trap_ramp_steps,
-                                self.trap_ramp_dt_us)
+                            
+                            # shims were zeroed at recovery start (above) -- the low-trap
+                            # survival image (image_low_trap) needs B~0 and does NOT zero
+                            # shims itself.
                             
                             delay(1 * ms)
-                            count_bg_total = count1_bg + count2_bg
-                            atom_alive = recool_and_check_survival(self, count_bg_total)   # recool+image+threshold (v2:812-847,857)
+
+                            atom_alive = recool_and_check_survival_lowtrap(self)   # recool+image+threshold (v2:812-847,857)
                             if not atom_alive:
                                 break    # atom lost -> back to Yellow
 

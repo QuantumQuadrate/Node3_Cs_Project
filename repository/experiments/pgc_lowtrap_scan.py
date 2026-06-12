@@ -300,6 +300,12 @@ class PGCLowTrapScan(EnvExperiment):
             self.core.break_realtime()
             delay(100 * us)
 
+            # === Feedback ===
+            prepare_for_feedback(self)
+            amp0, amp1, amp2, amp3, amp4 = self.rebalancer.rebalance()
+            trap_end = amp3
+            restore_after_feedback(self)
+            
             for ifr in range(len(self.f_list)):
                 f = self.f_list[ifr]
 
@@ -312,11 +318,7 @@ class PGCLowTrapScan(EnvExperiment):
                         for irel in range(len(self.release_list)):
                             rel = self.release_list[irel]
 
-                            # === Feedback ===
-                            prepare_for_feedback(self)
-                            amp0, amp1, amp2, amp3, amp4 = self.rebalancer.rebalance()
-                            trap_end = amp3
-                            restore_after_feedback(self)
+
 
                             # === Background + load + confirm image (shot1) ===
                             count1_bg, count2_bg = background_measurement_dual(self, self.t_imaging_gate)

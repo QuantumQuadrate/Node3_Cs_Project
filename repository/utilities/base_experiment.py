@@ -95,7 +95,7 @@ class BaseExperiment:
         """Return list of all dataset names we expect to exist."""
         return [
             # Timing
-            "t_MOT_loading", "t_MOT2PGC", "t_PGC_2_off", "t_PGC_after_img",
+            "t_MOT2PGC", "t_PGC_2_off", "t_PGC_after_img",
             "t_field_settle", "t_imaging_gate", "t_readout_monitor", "t_wait", "t_SPCM_exposure",
             "t_blowaway", "t_optical_pump",
             # Trap
@@ -111,8 +111,7 @@ class BaseExperiment:
             "f_cooling_DP_idle", "amp_cooling_DP_idle",
             "f_repump", "amp_repump",
             "f_D1_pump", "amp_D1_pump",
-            "f_RF", "amp_RF",
-            "f_FORT", "amp_FORT",
+            "f_FORT",
             "f_excitation_idle", "amp_excitation_idle",
             "f_D1_onoff_L", "amp_D1_onoff_L",
             "f_MOT_X", "amp_MOT_X",
@@ -127,11 +126,8 @@ class BaseExperiment:
             "f_cooling_blowaway", "amp_cooling_blowaway",
             "amp_cooling_blowaway_Z",
             "f_cooling_restore", "amp_cooling_restore",
-            "f_cooling_pre_wait", "amp_cooling_pre_wait",
             "f_cooling_compress", "amp_cooling_compress",
-            "f_cooling_feedback", "amp_cooling_feedback",
             "f_cooling_reload", "amp_cooling_reload",
-            "t_PGC_after_blowaway",
             # Microwave
             "f_mw_00", "f_mw_01", "f_mw_11", "f_mw_m10",
             "t_pi_00_mu", "t_pi_01_mu", "t_pi_11_mu", "t_pi_m10_mu", "t_pi_2ph_mu",
@@ -153,6 +149,9 @@ class BaseExperiment:
             "exc_beam_duration_mu", "exc_spcm_gate_offset_mu",
             # Detection
             "atom_threshold", "n_measurements",
+            # Low-trap imaging (calibrated via ImagingLowTrapScan)
+            "f_cooling_imaging_lowtrap", "amp_cooling_imaging_lowtrap",
+            "t_imaging_gate_lowtrap", "atom_threshold_lowtrap",
             # Deterministic loading (see subroutines/sequences.py::load_atom_deterministic)
             "t_atom_check_time", "single_atom_threshold_for_loading",
             "t_MOT_dissipation", "max_polling_tries", "loading_timeout_rounds",
