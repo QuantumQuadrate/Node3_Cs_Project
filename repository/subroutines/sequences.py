@@ -235,7 +235,7 @@ def check_atom_loaded(exp, count1_bg, count2_bg):
 def optical_pumping_F3(exp):
     """F=3 state preparation: brief cooling then beams off."""
     exp.dds_cooling_DP.sw.on()
-    delay(1 * ms)
+    delay(100 * us)
     exp.dds_cooling_DP.sw.off()
     delay(1 * us)
     exp.dds_D1_onoff_L.sw.off()
@@ -287,15 +287,18 @@ def optical_pumping(exp):
 
 
 @kernel
-def optical_pumping_timed(exp, t_pump):
-    """optical_pumping() with the pump-window length as a kernel ARGUMENT.
+def optical_pumping_timed(exp, t_pump, f_repump, amp_repump, f_d1, amp_d1):
+    """optical_pumping() with the SCANNABLE knobs as kernel ARGUMENTS.
 
-    Byte-for-byte identical to optical_pumping() EXCEPT the pump window is
-    delay(t_pump) (t_pump in SECONDS) instead of delay(exp.t_optical_pump).
-    Deliberate parallel copy so a scan (OpticalPumpScan) can sweep the pumping
-    time WITHOUT modifying optical_pumping() (whose pump window is a compile-time
-    constant). Caller contract identical to optical_pumping(): set the Q-axis
-    (set_qaxis) BEFORE calling.
+    Identical to optical_pumping() EXCEPT five knobs are arguments instead of
+    exp.attributes (which the kernel reads as compile-time constants and so cannot
+    sweep): the pump-window length t_pump (SECONDS, replaces delay(exp.t_optical_pump)),
+    the pump-repumper frequency f_repump (Hz) + amplitude amp_repump (replace
+    exp.f_pump_repumper / exp.amp_pump_repumper_active), and the D1-pump frequency
+    f_d1 (Hz) + amplitude amp_d1 (replace exp.f_pump_D1 / exp.amp_pump_D1). Deliberate
+    parallel copy of optical_pumping() for OpticalPumpScan; the rest of the beam
+    setup / parallel shutoff must still mirror optical_pumping() byte-for-byte.
+    Caller contract identical: set the Q-axis (set_qaxis) BEFORE calling.
     """
     # MOT fiber beams on for recooling during pump
     exp.dds_MOT_X.sw.on()
@@ -304,17 +307,18 @@ def optical_pumping_timed(exp, t_pump):
     delay(1 * us)
     exp.dds_MOT_Z.sw.on()
     delay(1 * us)
-    # D1 pump
-    exp.dds_D1_pump.set(frequency=exp.f_pump_D1, amplitude=exp.amp_pump_D1)
+    # D1 pump (frequency/amplitude are SCANNED arguments)
+    exp.dds_D1_pump.set(frequency=f_d1, amplitude=amp_d1)
     exp.dds_D1_pump.sw.on()
     delay(6 * us)
     # Excitation for pumping
     exp.dds_excitation.set(frequency=exp.f_pump_excitation, amplitude=exp.amp_pump_excitation)
     exp.dds_excitation.sw.on()
     delay(6 * us)
-    # Pump repumper
-    exp.dds_pump_repumper.set(frequency=exp.f_pump_repumper, amplitude=exp.amp_pump_repumper_active)
-    exp.dds_pump_repumper.sw.on()
+    # Pump repumper (frequency/amplitude are SCANNED arguments)
+    exp.dds_pump_repumper.set(frequency=f_repump, amplitude=amp_repump)
+    # exp.dds_pump_repumper.sw.on()
+    exp.dds_pump_repumper.sw.off()
     delay(6 * us)
     # Unblock D1/excitation path + SCANNED pump window
     exp.ttl_D1_exc_switch.off()
@@ -545,6 +549,47 @@ def microwave_two_photon_y(exp, click_time_mu):
     exp.ttl_MW_switch.on()              # block MW
 
 
+@kernel
+def microwave_two_photon_phase(exp, click_time_mu, rf_phase):
+    """General-basis analysis: MW pi pulse + two-photon basis rotation with a
+    FREELY chosen RF phase.
+
+    Identical timing to microwave_two_photon_x / microwave_two_photon_y; the only
+    difference is that the RF antenna phase is a parameter instead of hardcoded.
+    `rf_phase` is in DDS turns (fraction of a cycle): 0.0 = X basis,
+    0.25 = Y basis (90 deg), 0.5 = -X (180 deg), etc.
+
+    click_time_mu is the SPCM timestamp used as timing reference.
+    """
+    # Step 1: pi pulse (11 transition)
+    at_mu(click_time_mu + 2000)
+    exp.dds_mw_IF.sw.on()
+    at_mu(click_time_mu + int(exp.t_pi_11_mu) + 2000)
+    exp.dds_mw_IF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 2000 + 3300)
+    exp.ttl_MW_switch.on()              # block MW briefly
+
+    # Step 2: set two-photon frequencies (rf_phase selects the equatorial axis)
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 5000 + 3300)
+    exp.dds_mw_IF.set(frequency=exp.f_mw_2ph, amplitude=exp.amp_mw_pulse)
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 15000 + 3300)
+    exp.dds_RF.set(frequency=exp.f_RF_2ph, phase=rf_phase, amplitude=exp.amp_RF_2ph)
+
+    # Step 3: simultaneous MW + RF pulse 2 photon transition
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 25000 + 3300)
+    exp.ttl_MW_switch.off()             # unblock MW
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 25000 + 4000 + 3300)
+    with parallel:
+        exp.dds_mw_IF.sw.on()
+        exp.dds_RF.sw.on()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 25000 + 4000 + (int(exp.t_pi_2ph_mu) // 2) + 3300)
+    with parallel:
+        exp.dds_mw_IF.sw.off()
+        exp.dds_RF.sw.off()
+    at_mu(click_time_mu + 100 + int(exp.t_pi_11_mu) + 25000 + 4100 + (int(exp.t_pi_2ph_mu) // 2) + 3300)
+    exp.ttl_MW_switch.on()              # block MW
+
+
 # =========================================================================
 #  BLOWAWAY
 # =========================================================================
@@ -567,7 +612,7 @@ def blowaway_f4(exp, amp_MOT_Z_current):
     exp.zotino0.write_dac(2, exp.shim_Z1_off)
     exp.zotino0.write_dac(3, exp.shim_Z2_off)
     exp.zotino0.load()
-    delay(9 * ms)
+    delay(1 * ms)
 
     delay(10 * us)
     exp.dds_MOT_Z.set(frequency=exp.f_MOT_Z, amplitude=exp.amp_cooling_blowaway_Z)

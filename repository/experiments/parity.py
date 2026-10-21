@@ -140,6 +140,7 @@ class ParityExperiment(EnvExperiment):
         self.set_dataset("counts_background", [], broadcast=True)
         self.set_dataset("HWP_angles", [], broadcast=True)
         self.set_dataset("QWP_angles", [], broadcast=True)
+        self.set_dataset("how_many_atoms", [], broadcast=True)
         # Build scan sequences
         v1, s1 = self.HWP_angle_min, self.HWP_angle_step
         n1 = int(round((self.HWP_angle_max - v1) / s1)) + 1
@@ -166,6 +167,7 @@ class ParityExperiment(EnvExperiment):
 
     @kernel
     def run(self):
+        self.core.reset()
         self.base.initialize_hardware()
         # delay(1000 * ms)
         self.core.break_realtime()
@@ -173,19 +175,20 @@ class ParityExperiment(EnvExperiment):
         for qwp in self.QWP_scan:
             delay(100 * ms)
             move_to_target_deg(self, name="852_QWP", target_deg=qwp)
-            delay(5000 * ms)
+            delay(500 * ms)
             self.core.break_realtime()
 
             for hwp in self.HWP_scan:
                 delay(100 * ms)
                 move_to_target_deg(self, name="852_HWP", target_deg=hwp)
                 if hwp == self.HWP_scan[0]:
-                    delay(9000 * ms)
+                    delay(1000 * ms)
                 else:
-                    delay(3000 * ms)
+                    delay(500 * ms)
                 self.core.break_realtime()
 
                 measurements = 0
+                how_many_atoms = 0   # how many atom load attempts for each measurement
                 while measurements < int(self.n_measurements):
                     self.core.break_realtime()
 
@@ -204,13 +207,14 @@ class ParityExperiment(EnvExperiment):
                         # Background + atom loading
                         count1_bg, count2_bg = background_measurement_dual(self, self.t_imaging_gate)
                         load_atom_deterministic(self)
+                        how_many_atoms += 1
 
                         # Imaging PGC
                         imaging_pgc(self)
                         beams_off_for_imaging(self)
 
                         # Wait
-                        delay(self.t_SPCM_exposure)
+                        # delay(self.t_SPCM_exposure)
 
                         # Image
                         count1_1, count2_1 = spcm_image_dual(self, self.t_imaging_gate)
@@ -262,7 +266,7 @@ class ParityExperiment(EnvExperiment):
                             # 11-transition freq for all axes -- then optical pump.
                             self.dds_mw_IF.set(frequency=self.f_mw_11, amplitude=self.amp_mw_pulse)
                             optical_pumping(self)
-
+                            delay(5 * us)
                             # --- Excitation (v7:589 onward) ---
                             trials += 1
                             t_end1, t_end2, t0 = excitation_pulse(self)
@@ -372,10 +376,11 @@ class ParityExperiment(EnvExperiment):
                             final_ts1, final_ts2, trials,
                             count1_final + count2_final,
                             count1_bg + count2_bg,
-                            hwp, qwp
+                            hwp, qwp, how_many_atoms
                         )
                         trials = 0
                         measurements += 1
+                        how_many_atoms = 0
                         self.set_dataset("measurement_progress",
                                          measurements, broadcast=True)
                     # ===== END BLUE =====
@@ -385,8 +390,9 @@ class ParityExperiment(EnvExperiment):
         write_results(self)
 
     @rpc(flags={"async"})
-    def _save_measurement(self, ts1, ts2, trials, counts, counts_bg, hwp, qwp):
-        """Append measurement to datasets."""
+    def _save_measurement(self, ts1, ts2, trials, counts, counts_bg, hwp, qwp, how_many_atoms):
+        """Append measurement to datasets. how_many_atoms = atom load attempts for
+        this heralded measurement (reset to 0 after each success in run())."""
         self.append_to_dataset("SPCM1_timestamps", ts1)
         self.append_to_dataset("SPCM2_timestamps", ts2)
         self.append_to_dataset("trials_per_meas", trials)
@@ -394,6 +400,7 @@ class ParityExperiment(EnvExperiment):
         self.append_to_dataset("counts_background", counts_bg)
         self.append_to_dataset("HWP_angles", hwp)
         self.append_to_dataset("QWP_angles", qwp)
+        self.append_to_dataset("how_many_atoms", how_many_atoms)
         # Intermediate HDF5 save (mirrors microwave_scan's incremental save)
         self._incremental_save()
 

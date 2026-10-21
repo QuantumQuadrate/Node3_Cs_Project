@@ -30,7 +30,7 @@ import h5py
 RESULTS_DIR = Path(
     r"C:\Networking Experiment\Artiq7_TEST_NEW\useful_codes\repository\results"
 )
-SURVIVAL_TARGET = 0.90   # the "ceiling" = largest cycle count with survival >= this
+SURVIVAL_TARGET = 0.95   # the "ceiling" = largest cycle count with survival >= this
 
 
 # --------------------------------------------------------------------------
@@ -82,15 +82,19 @@ def wilson(k, n, z=1.0):
 #  ANALYSIS
 # --------------------------------------------------------------------------
 def survival_table(data):
-    """Filter loaded==1; return per-(total_cycles, release_us) (n_retained, n_loaded)."""
-    cyc = np.asarray(data["esv_total_cycles"]).astype(int)
+    """Filter loaded==1; return per-(cycles_per_group, release_us) (n_retained, n_loaded).
+
+    Keys on esv_cpg (the scanned cycles_per_group). Falls back to esv_total_cycles
+    for older runs that predate the cycles_per_group scan."""
+    key_arr = data["esv_cpg"] if "esv_cpg" in data else data["esv_total_cycles"]
+    cyc = np.asarray(key_arr).astype(int)
     rel = np.asarray(data["esv_release_us"]).astype(float)
     loaded = np.asarray(data["esv_atom_loaded"]).astype(int)
     retained = np.asarray(data["esv_atom_retained"]).astype(int)
     m = loaded > 0
     cyc, rel, retained = cyc[m], rel[m], retained[m]
 
-    table = {}   # (cycles, release) -> [n_retained, n_loaded]
+    table = {}   # (cycles_per_group, release) -> [n_retained, n_loaded]
     for c, r, ret in zip(cyc, rel, retained):
         key = (int(c), round(float(r), 3))
         if key not in table:
@@ -106,12 +110,12 @@ def analyze(path, out_png=None):
     import matplotlib.pyplot as plt
 
     data, snap, rid = load_run(path)
-    n_total = len(np.asarray(data.get("esv_total_cycles", [])))
+    n_total = len(np.asarray(data.get("esv_cpg", data.get("esv_total_cycles", []))))
     n_loaded = int(np.sum(np.asarray(data.get("esv_atom_loaded", [0])).astype(int)))
-    cpg = int(snap.get("cycles_per_group", 4))
+    n_groups = int(snap.get("n_groups", 1))
     recool = snap.get("recool_mode", "?")
     print(f"RID {rid} | {n_total} points | {n_loaded} loaded | "
-          f"cycles_per_group={cpg} | recool={recool}")
+          f"n_groups={n_groups} | recool={recool}")
     if n_loaded == 0:
         print("No loaded atoms -- nothing to analyze (check loading / atom_threshold).")
         return
@@ -125,7 +129,7 @@ def analyze(path, out_png=None):
     # --- Panel A: survival vs cycles at release=0 (the ceiling) ---
     rel0 = releases[0] if 0.0 not in releases else 0.0
     xs, ps, los, his = [], [], [], []
-    print(f"\nPanel A -- survival vs total cycles at release={rel0:g} us:")
+    print(f"\nPanel A -- survival vs cycles_per_group at release={rel0:g} us:")
     ceiling = None
     for c in cycle_counts:
         kn = table.get((c, rel0))
@@ -136,7 +140,7 @@ def analyze(path, out_png=None):
         # clamp to >= 0 (Wilson is centred on its own centre, not p, so at p=0/1
         # the error-bar distance can be a tiny negative from FP -> errorbar rejects it).
         los.append(max(0.0, p - lo)); his.append(max(0.0, hi - p))
-        print(f"  cycles={c:5d}  survival={p:.3f}  [{lo:.3f},{hi:.3f}]  (N={kn[1]})")
+        print(f"  cycles_per_group={c:5d}  survival={p:.3f}  [{lo:.3f},{hi:.3f}]  (N={kn[1]})")
         if p >= SURVIVAL_TARGET:
             ceiling = c
     if xs:
@@ -145,15 +149,15 @@ def analyze(path, out_png=None):
                     label=f"target {SURVIVAL_TARGET:.0%}")
         if ceiling is not None:
             axA.axvline(ceiling, ls=":", color="C3", lw=1.5,
-                        label=f"ceiling ≈ {ceiling} cyc")
+                        label=f"ceiling ≈ {ceiling} cpg")
         axA.legend(fontsize=9)
-    axA.set_xlabel("total excitation cycles")
+    axA.set_xlabel("cycles_per_group (cycles between recools)")
     axA.set_ylabel(f"survival (release={rel0:g} us)")
     axA.set_ylim(0, 1.05)
-    axA.set_title(f"A. Survival vs cycles  (RID {rid})")
+    axA.set_title(f"A. Survival vs cycles_per_group  (RID {rid})")
     if ceiling is not None:
-        print(f"  -> max cycles with survival >= {SURVIVAL_TARGET:.0%}: "
-              f"{ceiling}  (= {ceiling // cpg} groups of {cpg})")
+        print(f"  -> max cycles_per_group with survival >= {SURVIVAL_TARGET:.0%}: "
+              f"{ceiling}  (n_groups={n_groups} -> {ceiling * n_groups} total cycles)")
 
     # --- Panel B: recapture survival vs release per cycle count (temperature) ---
     print(f"\nPanel B -- recapture vs release (temperature proxy):")
@@ -164,11 +168,11 @@ def analyze(path, out_png=None):
             if kn and kn[1] > 0:
                 rx.append(r); ry.append(kn[0] / kn[1])
         if len(rx) >= 2:
-            axB.plot(rx, ry, "o-", label=f"{c} cyc", lw=1.5, ms=4)
+            axB.plot(rx, ry, "o-", label=f"{c} cpg", lw=1.5, ms=4)
             # half-recapture release time (temperature proxy)
             half = _half_release(rx, ry)
             ht = f"{half:.1f} us" if half is not None else "n/a"
-            print(f"  cycles={c:5d}:  half-recapture release = {ht}")
+            print(f"  cycles_per_group={c:5d}:  half-recapture release = {ht}")
     axB.axhline(0.5, ls="--", color="gray", lw=1)
     axB.set_xlabel("release time (us)")
     axB.set_ylabel("recapture survival")

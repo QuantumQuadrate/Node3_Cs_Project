@@ -92,6 +92,15 @@ class XYPlot(pyqtgraph.PlotWidget):
             print(markerx, markery)
             self.plot([markerx], [markery], symbol='o', symbolPen=(0, 0, 255))
 
+        # Fix the y-axis floor (e.g. 0) while the top auto-scales to the data.
+        if getattr(self.args, "ymin", None) is not None:
+            yy = np.array(y, dtype=float)
+            ymax = float(yy.max()) if yy.size else 1.0
+            if fit is not None and hasattr(fit, "__len__") and len(fit):
+                ymax = max(ymax, float(np.array(fit, dtype=float).max()))
+            top = ymax * 1.1 if ymax > 0 else 1.0
+            self.setYRange(float(self.args.ymin), top, padding=0)
+
     def length_warning(self):
         self.clear()
         text = "⚠️ dataset lengths mismatch:\n"
@@ -109,6 +118,8 @@ def main():
     applet.add_dataset("error", "Error bars for each X value", required=False)
     applet.add_dataset("fit", "Fit values", required=False)
     applet.add_dataset("fitx", "X values for the fit", required=False)
+    applet.argparser.add_argument("--ymin", type=float, default=None,
+                                  help="Fix the y-axis minimum (e.g. 0)")
 
     applet.run()
 

@@ -18,7 +18,10 @@ binomial error sqrt(p(1-p)/n) breaks down. The peak-probability amplitude is
 highlighted and cross-checked against the experiment's own `exc_best_amp`.
 
 With --timing, also plots the photon arrival-time profile (from the per-photon
-`SPCM*_timestamps` tagged by `SPCM*_ts_amp`).
+`SPCM*_timestamps` tagged by `SPCM*_ts_amp`): the full range AND a
+region-of-interest zoom that excludes the nonsense out-of-gate timestamps (e.g.
+the ~-600000 ns junk). Use --timing-roi for only the zoom, and --roi-lo/--roi-hi
+(ns) to set the window explicitly.
 
 Usage::
 
@@ -34,7 +37,12 @@ Options:
     --no-plot       Skip the probability plot, just print the table.
     --save-plot P   Save the probability plot to PATH instead of showing it.
     --csv P         Also write the per-amplitude table as CSV.
-    --timing        Also show the photon arrival-time histogram.
+    --timing        Also show the photon arrival-time histogram (full range and
+                    a region-of-interest zoom).
+    --timing-roi    Show only the region-of-interest arrival-time zoom.
+    --roi-lo NS     ROI window lower edge in ns (default: 0).
+    --roi-hi NS     ROI window upper edge in ns (default: ~99.9th percentile of
+                    the positive arrival times).
     --no-spcm       Plot only the combined probability (hide SPCM1/SPCM2 curves).
 """
 
@@ -267,11 +275,9 @@ def plot_scan(meta, rows, out=None, show_spcm=True):
         plt.show()
 
 
-def plot_timing(path, amp=None, out=None, bins=60):
-    """Photon arrival-time histogram (relative to excitation start), optionally
+def _load_photon_timestamps(path, amp=None):
+    """Load per-photon arrival times (seconds) for SPCM1/SPCM2, optionally
     restricted to one excitation amplitude via `amp`."""
-    import matplotlib.pyplot as plt
-
     bundle = load(path)
     d = bundle["data"]
     ts1 = np.asarray(d.get("SPCM1_timestamps", []), dtype=float)
@@ -285,6 +291,40 @@ def plot_timing(path, amp=None, out=None, bins=60):
             ts1 = ts1[np.round(a1, 6) == key]
         if ts2.size:
             ts2 = ts2[np.round(a2, 6) == key]
+    return ts1, ts2
+
+
+def _auto_roi_ns(ts_ns_list, lo=None, hi=None):
+    """Pick a sensible arrival-time window (ns), excluding the nonsense
+    out-of-gate timestamps (e.g. the ~-600000 ns junk from empty/stale SPCM
+    gates that slips past the acquisition's click>0 filter).
+
+    Real photons arrive AFTER the excitation start, so the default lower bound
+    is 0. The default upper bound is just past the bulk of the positive data
+    (99.9th percentile), so the emission peak fills the axes. Either bound can
+    be overridden explicitly.
+    """
+    have = [t for t in ts_ns_list if t.size]
+    pos = np.concatenate([t[t >= 0] for t in have]) if have else np.array([])
+    if lo is None:
+        lo = 0.0
+    if hi is None:
+        if pos.size:
+            hi = float(np.percentile(pos, 99.9))
+            span = hi - lo
+            hi += 0.05 * span if span > 0 else 1.0
+        else:
+            hi = lo + 1.0
+    return float(lo), float(hi)
+
+
+def plot_timing(path, amp=None, out=None, bins=60):
+    """Photon arrival-time histogram (relative to excitation start), optionally
+    restricted to one excitation amplitude via `amp`. Shows the FULL range,
+    including any out-of-window junk (use plot_timing_roi to zoom in)."""
+    import matplotlib.pyplot as plt
+
+    ts1, ts2 = _load_photon_timestamps(path, amp)
 
     if ts1.size == 0 and ts2.size == 0:
         print("No photon timestamps to plot"
@@ -300,7 +340,7 @@ def plot_timing(path, amp=None, out=None, bins=60):
                 label=f"SPCM2 (N={ts2.size})")
     ax.set_xlabel("Photon arrival time after excitation start (ns)")
     ax.set_ylabel("Counts")
-    ttl = "Photon arrival-time profile"
+    ttl = "Photon arrival-time profile (full range)"
     if amp is not None:
         ttl += f"   (amp = {amp:.3f})"
     ax.set_title(f"{ttl}  |  {Path(path).name}")
@@ -311,6 +351,74 @@ def plot_timing(path, amp=None, out=None, bins=60):
     if out:
         fig.savefig(out, dpi=140)
         print(f"Timing plot saved: {out}")
+    else:
+        plt.show()
+
+
+def plot_timing_roi(path, amp=None, out=None, bins=60, roi_lo=None, roi_hi=None):
+    """Additional plot: photon arrival-time histogram restricted to the
+    region-of-interest time window, so the real emission peak is visible and the
+    nonsense out-of-gate timestamps (e.g. ~-600000 ns) are excluded.
+
+    The window defaults to [0, ~99.9th percentile of positive arrivals]; override
+    either edge with roi_lo / roi_hi (both in ns)."""
+    import matplotlib.pyplot as plt
+
+    ts1, ts2 = _load_photon_timestamps(path, amp)
+
+    if ts1.size == 0 and ts2.size == 0:
+        print("No photon timestamps to plot"
+              + (f" at amp={amp:.3f}" if amp is not None else "") + ".")
+        return
+
+    ts1_ns = ts1 * 1e9
+    ts2_ns = ts2 * 1e9
+    lo, hi = _auto_roi_ns([ts1_ns, ts2_ns], roi_lo, roi_hi)
+
+    def _in(ts):
+        return ts[(ts >= lo) & (ts <= hi)]
+
+    in1, in2 = _in(ts1_ns), _in(ts2_ns)
+    n_total = int(ts1_ns.size + ts2_ns.size)
+    n_in = int(in1.size + in2.size)
+    n_neg = int(np.sum(ts1_ns < 0) + np.sum(ts2_ns < 0))
+    n_out = n_total - n_in
+
+    print(f"ROI [{lo:.1f}, {hi:.1f}] ns: kept {n_in}/{n_total} photons "
+          f"({n_out} outside window, of which {n_neg} negative/nonsense).")
+
+    if in1.size == 0 and in2.size == 0:
+        print(">> No photons fall inside the ROI window; widen it with "
+              "--roi-hi / --roi-lo.")
+        return
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    edges = np.linspace(lo, hi, bins + 1)
+    if in1.size:
+        ax.hist(in1, bins=edges, alpha=0.6, color="C1",
+                label=f"SPCM1 (N={in1.size})")
+    if in2.size:
+        ax.hist(in2, bins=edges, alpha=0.6, color="C2",
+                label=f"SPCM2 (N={in2.size})")
+    ax.set_xlim(lo, hi)
+    ax.set_xlabel("Photon arrival time after excitation start (ns)")
+    ax.set_ylabel("Counts")
+    ttl = "Photon arrival-time profile (region of interest)"
+    if amp is not None:
+        ttl += f"   (amp = {amp:.3f})"
+    ax.set_title(f"{ttl}  |  {Path(path).name}")
+    ax.text(0.98, 0.95,
+            f"window [{lo:.0f}, {hi:.0f}] ns\n"
+            f"kept {n_in}/{n_total}  ({n_out} dropped, {n_neg} negative)",
+            transform=ax.transAxes, ha="right", va="top", fontsize=8,
+            bbox=dict(boxstyle="round", fc="w", alpha=0.7))
+    ax.grid(alpha=0.3)
+    ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+
+    if out:
+        fig.savefig(out, dpi=140)
+        print(f"ROI timing plot saved: {out}")
     else:
         plt.show()
 
@@ -360,9 +468,18 @@ def main():
     ap.add_argument("--csv", type=str, default=None, metavar="PATH",
                     help="Also write the per-amplitude table as CSV")
     ap.add_argument("--timing", action="store_true",
-                    help="Also show the photon arrival-time histogram")
+                    help="Also show the photon arrival-time histogram (full range "
+                         "AND a region-of-interest zoom)")
+    ap.add_argument("--timing-roi", action="store_true",
+                    help="Show only the region-of-interest arrival-time zoom "
+                         "(excludes the ~-600000 ns junk)")
     ap.add_argument("--timing-amp", type=float, default=None, metavar="AMP",
                     help="Restrict the arrival-time histogram to one amplitude")
+    ap.add_argument("--roi-lo", type=float, default=None, metavar="NS",
+                    help="ROI window lower edge in ns (default: 0)")
+    ap.add_argument("--roi-hi", type=float, default=None, metavar="NS",
+                    help="ROI window upper edge in ns (default: ~99.9th pct of "
+                         "positive arrivals)")
     ap.add_argument("--no-spcm", action="store_true",
                     help="Plot only the combined probability (hide SPCM1/SPCM2)")
     args = ap.parse_args()
@@ -380,6 +497,9 @@ def main():
 
     if args.timing:
         plot_timing(path, amp=args.timing_amp)
+    if args.timing or args.timing_roi:
+        plot_timing_roi(path, amp=args.timing_amp,
+                        roi_lo=args.roi_lo, roi_hi=args.roi_hi)
 
 
 if __name__ == "__main__":

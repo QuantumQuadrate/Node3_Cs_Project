@@ -1,15 +1,16 @@
-"""Analyze OpticalPumpScan runs: mF=0 pumping fidelity vs. optical-pump TIME, and
-the recommended (shortest-sufficient) t_optical_pump.
+"""Analyze OpticalPumpScan runs: mF=0 pumping fidelity vs. one or two selectable
+knobs ({t_optical_pump, f_pump_repumper, amp_pump_repumper_active}).
 
-Reads a `*-OpticalPumpScan.h5`. For each pump time we have two interleaved
-configs: pi (cfg=1) and no-pi reference (cfg=0). Among LOADED atoms,
+Reads a `*-OpticalPumpScan.h5`. At each grid point we have two interleaved configs:
+pi (cfg=1) and no-pi reference (cfg=0). Among LOADED atoms,
   lost = 1 - retention   (atom blown away by F=4 blowaway = it ended in F=4).
 The clean mF=0 transfer signal subtracts the F=4-leftover background:
-  signal(t) = lost_pi(t) - lost_noPi(t).
-signal(t) rises and SATURATES; the knee is the shortest pump time that still
-prepares mF=0. We fit  signal(t) = S_inf - (S_inf - S_0) * exp(-t / tau)  and
-report tau and t_rise98 = tau*ln(50) (time to close 98% of the S_0->S_inf rise)
-as the recommended t_optical_pump. A fit-free empirical knee is printed too.
+  signal = lost_pi - lost_noPi   (lost_noPi = the repumper F=4 leftover).
+analyze() auto-detects the shape:
+  1-D (one axis) -> lost-fraction + signal curve; a saturating fit
+      signal(t) = S_inf - (S_inf - S_0)*exp(-t/tau), tau & t_rise98 = tau*ln(50),
+      ONLY when the axis is the pump time;
+  2-D -> heatmaps of signal (maximize) and lost_noPi (minimize), best = argmax signal.
 
 BLAS-free: only elementwise exp + sums + a hand-rolled 2x2 least-squares (the
 artiq7_claude BLAS segfaults on np.linalg.inv / hangs curve_fit). But PREFER the
@@ -53,7 +54,11 @@ def find_run(rid=None):
 
 
 def load_run(path):
-    """Return (data dict of op_* arrays, snapshot dict, rid)."""
+    """Return (data dict of op_* arrays, snapshot dict, rid).
+
+    NOTE: write_results stores STRING-valued datasets (e.g. snapshot_axis_x /
+    op_axis_x_name) as HDF5 GROUP ATTRIBUTES, not as datasets -- so we read both
+    ds.keys() (numeric datasets) AND ds.attrs (string values)."""
     data, snap = {}, {}
     with h5py.File(path, "r", locking=False) as hf:
         ds = hf["datasets"] if "datasets" in hf else hf
@@ -64,6 +69,12 @@ def load_run(path):
             elif k.startswith("snapshot_"):
                 v = ds[k][()]
                 snap[k[len("snapshot_"):]] = v.decode() if isinstance(v, bytes) else v
+        for k, v in ds.attrs.items():        # string-valued op_*/snapshot_* live here
+            val = v.decode() if isinstance(v, bytes) else v
+            if k.startswith("snapshot_"):
+                snap[k[len("snapshot_"):]] = val
+            elif k.startswith("op_"):
+                data[k] = val
     rid = int(os.path.basename(path).split("-")[0])
     return data, snap, rid
 
@@ -79,20 +90,48 @@ def wilson(k, n, z=1.0):
     return p, max(0.0, c - h), min(1.0, c + h)
 
 
+def get_xy(data, snap):
+    """Return (x, y, x_name, y_name) for the run.
+
+    New 2-D runs carry op_axis_x_val / op_axis_y_val + snapshot axis_x / axis_y.
+    Old 1-D pump-time runs carry op_t_pump_us -> x = pump time, y = constant 0.
+    """
+    if "op_axis_x_val" in data:
+        x = np.atleast_1d(data["op_axis_x_val"]).astype(float)
+        y = (np.atleast_1d(data["op_axis_y_val"]).astype(float)
+             if "op_axis_y_val" in data else np.zeros_like(x))
+        x_name = str(snap.get("axis_x", "x"))
+        y_name = str(snap.get("axis_y", "none"))
+    else:
+        x = np.atleast_1d(data["op_t_pump_us"]).astype(float)
+        y = np.zeros_like(x)
+        x_name, y_name = "t_optical_pump", "none"
+    return x, y, x_name, y_name
+
+
+def axis_label(name):
+    """Human axis label (with unit) for a scan-knob name."""
+    return {"t_optical_pump": "optical-pump time (us)",
+            "f_pump_repumper": "pump-repumper freq (MHz)",
+            "amp_pump_repumper_active": "pump-repumper amp",
+            "f_pump_D1": "D1-pump freq (MHz)",
+            "amp_pump_D1": "D1-pump amp"}.get(name, name)
+
+
 # --------------------------------------------------------------------------
 #  TABLES
 # --------------------------------------------------------------------------
-def retention_table(data):
-    """Filter loaded==1; return {(t_us, cfg): [n_retained, n_loaded]}."""
-    t = np.asarray(data["op_t_pump_us"]).astype(float)
+def retention_table(data, snap):
+    """Filter loaded==1; return {(x, y, cfg): [n_retained, n_loaded]}."""
+    x, y, _, _ = get_xy(data, snap)
     cfg = np.asarray(data["op_apply_pi"]).astype(int)
     loaded = np.asarray(data["op_atom_loaded"]).astype(int)
     retained = np.asarray(data["op_atom_retained"]).astype(int)
     m = loaded > 0
-    t, cfg, retained = t[m], cfg[m], retained[m]
+    x, y, cfg, retained = x[m], y[m], cfg[m], retained[m]
     table = {}
-    for tt, cc, ret in zip(t, cfg, retained):
-        key = (round(float(tt), 2), int(cc))
+    for xx, yy, cc, ret in zip(x, y, cfg, retained):
+        key = (round(float(xx), 4), round(float(yy), 4), int(cc))
         if key not in table:
             table[key] = [0, 0]
         table[key][0] += int(ret)
@@ -100,14 +139,19 @@ def retention_table(data):
     return table
 
 
-def build_curves(data):
-    """Return a dict of per-time arrays (all aligned to `ts`):
-        ts, lost_pi, lpi_lo, lpi_hi, n_pi,
-            lost_no, lno_lo, lno_hi, n_no,
-            signal, n_eff
-    `lost = 1 - retention`; CIs are the Wilson CIs of `lost` (= flipped Wilson of
-    retention). signal = lost_pi - lost_no (NaN where either config is missing)."""
-    table = retention_table(data)
+def build_curves(data, snap):
+    """1-D curves vs the X axis (marginalised over Y), keyed on `ts` (= X values):
+        ts, lost_pi, lpi_lo, lpi_hi, n_pi, lost_no, lno_lo, lno_hi, n_no, signal, n_eff
+    `lost = 1 - retention`; CIs are the (clamped) flipped Wilson CIs of retention.
+    signal = lost_pi - lost_no (NaN where either config is missing)."""
+    table2d = retention_table(data, snap)
+    table = {}                              # collapse (x, y, cfg) -> (x, cfg)
+    for (xk, yk, cfgk), v in table2d.items():
+        k = (xk, cfgk)
+        if k not in table:
+            table[k] = [0, 0]
+        table[k][0] += v[0]
+        table[k][1] += v[1]
     ts = sorted({k[0] for k in table})
 
     out = {k: [] for k in ("ts", "lost_pi", "lpi_lo", "lpi_hi", "n_pi",
@@ -141,6 +185,34 @@ def build_curves(data):
     for k in out:
         out[k] = np.asarray(out[k], dtype=float)
     return out
+
+
+def build_grids_2d(data, snap):
+    """2-D grids over (X, Y). Returns (xs, ys, M_signal, M_lost_no, M_lost_pi,
+    best_xy, best_sig). M[iy, ix]; NaN where a cell lacks the needed config(s).
+    best = argmax signal over cells with BOTH the pi and no-pi configs."""
+    table = retention_table(data, snap)
+    xs = sorted({k[0] for k in table})
+    ys = sorted({k[1] for k in table})
+    M_sig = np.full((len(ys), len(xs)), np.nan)
+    M_lno = np.full((len(ys), len(xs)), np.nan)
+    M_lpi = np.full((len(ys), len(xs)), np.nan)
+    best_xy, best_sig = None, -np.inf
+    for iy, yv in enumerate(ys):
+        for ix, xv in enumerate(xs):
+            dpi = table.get((xv, yv, 1))
+            dno = table.get((xv, yv, 0))
+            if dpi and dpi[1] > 0:
+                M_lpi[iy, ix] = 1.0 - dpi[0] / dpi[1]
+            if dno and dno[1] > 0:
+                M_lno[iy, ix] = 1.0 - dno[0] / dno[1]
+            if dpi and dno and dpi[1] > 0 and dno[1] > 0:
+                sig = M_lpi[iy, ix] - M_lno[iy, ix]
+                M_sig[iy, ix] = sig
+                if sig > best_sig:
+                    best_sig = sig
+                    best_xy = (xv, yv)
+    return xs, ys, M_sig, M_lno, M_lpi, best_xy, best_sig
 
 
 # --------------------------------------------------------------------------
@@ -209,88 +281,133 @@ def empirical_knee(curves):
 #  DRIVER
 # --------------------------------------------------------------------------
 def analyze(path, out_png=None):
+    """Dispatch on the scan shape: 1 unique Y -> 1-D curve (saturation fit only when
+    the X axis is the pump time); >1 unique Y -> 2-D heatmaps."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     data, snap, rid = load_run(path)
-    n_total = len(np.asarray(data.get("op_t_pump_us", [])))
+    x, y, x_name, y_name = get_xy(data, snap)
+    n_total = int(x.size)
     n_loaded = int(np.sum(np.asarray(data.get("op_atom_loaded", [0])).astype(int)))
-    print(f"RID {rid} | {n_total} points | {n_loaded} loaded")
+    print(f"RID {rid} | {n_total} points | {n_loaded} loaded | X={x_name}  Y={y_name}")
     if n_loaded == 0:
         print("No loaded atoms -- nothing to analyze (check loading / atom_threshold).")
         return
 
-    curves = build_curves(data)
+    n_y = len({round(float(v), 4) for v in y})
+    if n_y > 1:
+        _analyze_2d(path, data, snap, rid, x_name, y_name, plt, out_png)
+    else:
+        _analyze_1d(path, data, snap, rid, x_name, plt, out_png)
+
+
+def _analyze_1d(path, data, snap, rid, x_name, plt, out_png):
+    curves = build_curves(data, snap)
     ts = curves["ts"]
-    print("  t_pump(us)   lost_pi   lost_noPi   signal   n_pi  n_noPi")
+    is_time = (x_name == "t_optical_pump")
+    xlabel = axis_label(x_name)
+
+    print(f"  {x_name:>22}   lost_pi   lost_noPi   signal   n_pi  n_noPi")
     for i in range(len(ts)):
-        print(f"  {ts[i]:9.2f}   {curves['lost_pi'][i]:7.3f}   {curves['lost_no'][i]:9.3f}   "
+        print(f"  {ts[i]:22.4g}   {curves['lost_pi'][i]:7.3f}   {curves['lost_no'][i]:9.3f}   "
               f"{curves['signal'][i]:6.3f}   {int(curves['n_pi'][i]):4d}  {int(curves['n_no'][i]):4d}")
 
-    fit = fit_saturation(ts, curves["signal"], weights=curves["n_eff"])
+    fit = fit_saturation(ts, curves["signal"], weights=curves["n_eff"]) if is_time else {"ok": False}
     knee = empirical_knee(curves)
     t_max = float(np.nanmax(ts)) if len(ts) else 0.0
 
-    if fit.get("ok"):
+    if is_time and fit.get("ok"):
         rec = min(fit["t_rise98"], t_max) if t_max > 0 else fit["t_rise98"]
         clamp = " (clamped to scanned range)" if fit["t_rise98"] > t_max > 0 else ""
         print(f"\nFIT signal(t) = S_inf - (S_inf - S0) exp(-t/tau):")
-        print(f"  S_inf (mF=0 fidelity ceiling) = {fit['S_inf']:.3f}   S0 = {fit['S0']:.3f}   "
-              f"tau = {fit['tau']:.1f} us")
+        print(f"  S_inf = {fit['S_inf']:.3f}   S0 = {fit['S0']:.3f}   tau = {fit['tau']:.1f} us")
         print(f"  RECOMMENDED t_optical_pump ~ t_rise98 = tau*ln(50) = "
               f"{fit['t_rise98']:.1f} us  -> use {rec:.1f} us{clamp}")
-    else:
-        print("\nFIT: not enough valid points for a saturating fit.")
-    if knee is not None:
-        print(f"  empirical knee (signal within CI of its peak): t_pump = {knee:g} us")
-    print("  (recommend-only: set t_optical_pump on the dashboard yourself; this script does NOT write it.)")
+    sig = curves["signal"]
+    if np.isfinite(sig).any():
+        ib = int(np.nanargmax(sig))
+        print(f"  max signal = {sig[ib]:.3f} at {x_name} = {ts[ib]:g}")
+    print("  (recommend-only: set the knob on the dashboard yourself; not written.)")
 
     # ---- plots ----
     fig, (axL, axS) = plt.subplots(1, 2, figsize=(13.5, 5), constrained_layout=True)
-
-    # Panel A: lost_pi and lost_noPi vs t
     _errbar(axL, ts, curves["lost_pi"], curves["lpi_lo"], curves["lpi_hi"],
             "o-", "C0", "lost_pi (pi applied)", plt)
     _errbar(axL, ts, curves["lost_no"], curves["lno_lo"], curves["lno_hi"],
             "s-", "C1", "lost_noPi (reference)", plt)
-    axL.set_xlabel("optical-pump time (us)")
+    axL.set_xlabel(xlabel)
     axL.set_ylabel("lost fraction  (1 - retention)")
     axL.set_title("A. lost fraction: pi vs no-pi reference")
     axL.set_ylim(-0.02, 1.02)
     axL.legend(loc="best", fontsize=9)
     axL.grid(alpha=0.3)
 
-    # Panel B: signal + fit + recommended time
     sig_half = np.sqrt(np.nan_to_num((curves["lpi_hi"] - curves["lpi_lo"]) / 2.0) ** 2
                        + np.nan_to_num((curves["lno_hi"] - curves["lno_lo"]) / 2.0) ** 2)
     axS.errorbar(ts, curves["signal"], yerr=sig_half, fmt="o", color="C3",
                  capsize=3, label="signal = lost_pi - lost_noPi")
-    if fit.get("ok"):
+    if is_time and fit.get("ok"):
         tt = np.linspace(0.0, t_max if t_max > 0 else 1.0, 300)
         yy = fit["S_inf"] - (fit["S_inf"] - fit["S0"]) * np.exp(-tt / fit["tau"])
-        axS.plot(tt, yy, "-", color="C3", alpha=0.7,
-                 label=f"fit (tau={fit['tau']:.0f} us)")
+        axS.plot(tt, yy, "-", color="C3", alpha=0.7, label=f"fit (tau={fit['tau']:.0f} us)")
         axS.axvline(min(fit["t_rise98"], t_max) if t_max > 0 else fit["t_rise98"],
-                    color="k", ls="--", alpha=0.7,
-                    label=f"t_rise98 = {fit['t_rise98']:.0f} us")
-    if knee is not None:
-        axS.axvline(knee, color="g", ls=":", alpha=0.7, label=f"empirical knee = {knee:g} us")
-    axS.set_xlabel("optical-pump time (us)")
+                    color="k", ls="--", alpha=0.7, label=f"t_rise98 = {fit['t_rise98']:.0f} us")
+        if knee is not None:
+            axS.axvline(knee, color="g", ls=":", alpha=0.7, label=f"empirical knee = {knee:g} us")
+    else:
+        axS.plot(ts, curves["signal"], "-", color="C3", alpha=0.4)
+    axS.set_xlabel(xlabel)
     axS.set_ylabel("clean mF=0 signal")
     axS.set_title("B. mF=0 transfer signal (background-subtracted)")
     axS.legend(loc="best", fontsize=9)
     axS.grid(alpha=0.3)
 
-    fig.suptitle(f"Optical-pump time scan -- RID {rid}  "
-                 f"(live t_optical_pump = {float(snap.get('t_optical_pump', 0)) * 1e6:.1f} us)",
-                 fontsize=13)
-
+    fig.suptitle(f"OpticalPumpScan 1-D ({x_name}) -- RID {rid}", fontsize=13)
     if out_png is None:
         out_png = str(Path(path).with_name(f"optical_pump_scan_RID{rid}.png"))
     fig.savefig(out_png, dpi=130)
     plt.close(fig)
     print(f"Saved figure: {out_png}")
+
+
+def _analyze_2d(path, data, snap, rid, x_name, y_name, plt, out_png):
+    xs, ys, M_sig, M_lno, M_lpi, best_xy, best_sig = build_grids_2d(data, snap)
+    xs, ys = np.asarray(xs), np.asarray(ys)
+    print(f"  2-D grid: {len(xs)} X ({x_name}) x {len(ys)} Y ({y_name})")
+    if best_xy is not None:
+        ix = int(np.argmin(np.abs(xs - best_xy[0])))
+        iy = int(np.argmin(np.abs(ys - best_xy[1])))
+        print(f"  BEST signal = {best_sig:.3f} at {x_name}={best_xy[0]:g}, {y_name}={best_xy[1]:g}")
+        print(f"    there: lost_noPi (F=4 leftover) = {M_lno[iy, ix]:.3f}, lost_pi = {M_lpi[iy, ix]:.3f}")
+    else:
+        print("  No cell has both pi and no-pi configs yet.")
+    print("  (recommend-only: set f_pump_repumper / amp_pump_repumper_active on the dashboard.)")
+
+    fig, (axS, axN) = plt.subplots(1, 2, figsize=(13.5, 5), constrained_layout=True)
+    _heatmap(axS, xs, ys, M_sig, "A. clean mF=0 signal (lost_pi - lost_noPi) -- maximize",
+             best_xy, plt, x_name, y_name)
+    _heatmap(axN, xs, ys, M_lno, "B. lost_noPi  (F=4 leftover -- minimize)",
+             best_xy, plt, x_name, y_name)
+    fig.suptitle(f"OpticalPumpScan 2-D ({x_name} x {y_name}) -- RID {rid}", fontsize=13)
+    if out_png is None:
+        out_png = str(Path(path).with_name(f"optical_pump_scan_RID{rid}.png"))
+    fig.savefig(out_png, dpi=130)
+    plt.close(fig)
+    print(f"Saved figure: {out_png}")
+
+
+def _heatmap(ax, xs, ys, M, title, best_xy, plt, x_name, y_name):
+    im = ax.pcolormesh(xs, ys, M, shading="nearest", cmap="viridis")
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    if best_xy is not None:
+        ax.plot(best_xy[0], best_xy[1], "*", color="red", ms=16,
+                markeredgecolor="white", label="best signal")
+        ax.legend(loc="upper right", fontsize=9)
+    ax.set_xlabel(axis_label(x_name))
+    ax.set_ylabel(axis_label(y_name))
+    ax.set_title(title, fontsize=11)
 
 
 def _errbar(ax, x, y, lo, hi, fmt, color, label, plt):

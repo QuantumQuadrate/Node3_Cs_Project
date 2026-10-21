@@ -1,33 +1,29 @@
-"""Optical-pumping TIME scan -- mF=0 state-preparation fidelity vs. pump time.
+"""Optical-pumping 2-D scan -- mF=0 state-prep fidelity vs. two selectable knobs.
 
-Goal: find the SHORTEST optical-pumping window that still fully prepares
-|F=3, mF=0>. A shorter pump means less state-prep scattering/heating at the low
-trap (what bounds how many excitation cycles parity can afford), so we want the
-KNEE of the fidelity-vs-time curve, not just "more pumping".
+Generalises the old pump-TIME scan into a 2-D scan whose two axes are chosen on the
+dashboard from {t_optical_pump, f_pump_repumper, amp_pump_repumper_active} (set the
+Y axis to "none" for a 1-D scan). Unselected knobs keep their live value.
 
-Probe (user's design): at the Q-axis B-field the mw00 pi-pulse drives ONLY
-|F=3, mF=0> -> |F=4, mF=0> (Zeeman-resolved, mF=0-selective). Pump for the
-scanned time, apply the fixed 00 pi, blow away F=4, then image:
-  - atom pumped to mF=0  -> transferred to F=4 -> blown away -> reads DARK (lost),
-  - atom in mF!=0        -> stays in F=3        -> survives    -> reads BRIGHT.
-So lost-fraction vs. pump-time is a SATURATING curve whose level = mF=0 fidelity.
+Motivation: the no-pi reference showed the pump REPUMPER is imperfect -- a real
+fraction of atoms is left in F=4 after pumping (lost_noPi > 0). Scanning the
+repumper frequency (f_pump_repumper) x amplitude (amp_pump_repumper_active) finds
+the (f, amp) that drives the F=4 leftover down / maximises the clean mF=0 signal.
 
-This is microwave_scan's Time_00 mode with two swaps: the scan axis is the PUMP
-TIME (not the MW duration), and the MW pulse is a FIXED 00 pi
-(mw_pulse_00(self, f_mw_00, t_pi_00_mu)). Everything else is identical.
+Probe (unchanged): at the Q-axis B-field the mw00 pi-pulse drives ONLY
+|F=3,mF=0> -> |F=4,mF=0>; blow away F=4, then image. Interleaved pi/no-pi at every
+grid point: cfg=1 applies the pi, cfg=0 is a matched dark-hold (MW blocked). Among
+loaded atoms, lost = 1 - retention; the clean mF=0 signal is
+  signal = lost_pi - lost_noPi
+(lost_noPi = the F=4-leftover background). See analyze_optical_pump_scan.
 
-Interleaved no-pi reference: at each pump-time point we run BOTH configs back-to-
-back on successive fresh atoms within the same loop -- cfg=1 applies the pi,
-cfg=0 skips it (a matched dark-hold, MW stays blocked). The dark fraction can
-also include atoms left in F=4 by INCOMPLETE pumping (a background, largest at
-short times); the no-pi run measures that background directly, so the clean mF=0
-signal is  lost_pi(t) - lost_noPi(t)  (see analyze_optical_pump_scan).
+Sequence (unchanged): feedback -> load -> confirm (shot1, high trap) ->
+optical_pumping_F3 -> set_qaxis -> ramp DOWN -> optical_pumping_timed(t_pump,
+f_repump, amp_repump) -> (pi / matched no-pi) -> blowaway_f4 -> ramp UP ->
+final_state_readout (shot2). The three scannable knobs are kernel arguments of
+optical_pumping_timed (a parallel copy of optical_pumping); optical_pumping() is
+untouched.
 
-The pumping-time variant lives in subroutines.sequences.optical_pumping_timed
-(an exact copy of optical_pumping with the pump window as a kernel argument);
-optical_pumping() itself is untouched.
-
-Optimum is PRINTED, not written -- set t_optical_pump on the dashboard yourself.
+Optimum is PRINTED, not written -- set the params on the dashboard yourself.
 """
 
 import sys, os
@@ -44,6 +40,10 @@ from subroutines.sequences import (
 )
 from utilities.write_results import write_results
 
+# Scannable knobs (the X/Y axes are chosen from these).
+_AXES = ["t_optical_pump", "f_pump_repumper", "amp_pump_repumper_active",
+         "f_pump_D1", "amp_pump_D1"]
+
 
 class OpticalPumpScan(EnvExperiment):
     """OpticalPumpScan_Exp"""
@@ -52,75 +52,138 @@ class OpticalPumpScan(EnvExperiment):
         self.base = BaseExperiment(self)
         self.base.build()
 
-        # --- Optical-pump TIME scan (us). Plain NumberValue (raw us floats, NO
-        #     unit=) to avoid any dashboard unit double-scaling; the logged value
-        #     is exact us. prepare() prints the live t_optical_pump so you can
-        #     centre the range on it. Set min==max to fix a single time. ---
-        self.setattr_argument("t_pump_min_us",
-                              NumberValue(0.0, min=0.0, max=100000.0, ndecimals=2, step=1.0),
-                              group="Pump-time scan (us)")
-        self.setattr_argument("t_pump_max_us",
-                              NumberValue(2000.0, min=0.0, max=100000.0, ndecimals=2, step=1.0),
-                              group="Pump-time scan (us)")
-        self.setattr_argument("t_pump_step_us",
-                              NumberValue(200.0, min=0.01, max=100000.0, ndecimals=2, step=1.0),
-                              group="Pump-time scan (us)")
+        # --- Scan-axis selection. Pick X and Y; set axis_y="none" for a 1-D scan.
+        #     An unselected knob keeps its live (dataset) value. ---
+        self.setattr_argument("axis_x", EnumerationValue(_AXES, default="f_pump_repumper"),
+                              group="Scan axes")
+        self.setattr_argument("axis_y", EnumerationValue(["none"] + _AXES, default="amp_pump_repumper_active"),
+                              group="Scan axes")
 
-        # --- Repetitions (binomial statistics; each loop runs BOTH pi/no-pi
-        #     configs at every pump time, so shots-per-(time,config) ~ n_loops) ---
-        self.setattr_argument("n_measurements",
-                              NumberValue(300, min=1, max=600000, ndecimals=0, step=1),
+        # --- Per-knob ranges (each in its NATURAL unit; only the selected axes are
+        #     used). Plain NumberValue (no unit= -> no double-scaling). ---
+        # Pump-window time (us). prepare() prints the live t_optical_pump.
+        self.setattr_argument("t_pump_min_us", NumberValue(0.0, min=0.0, max=100000.0, ndecimals=2, step=1.0), group="Pump-time range (us)")
+        self.setattr_argument("t_pump_max_us", NumberValue(2000.0, min=0.0, max=100000.0, ndecimals=2, step=1.0), group="Pump-time range (us)")
+        self.setattr_argument("t_pump_step_us", NumberValue(200.0, min=0.01, max=100000.0, ndecimals=2, step=1.0), group="Pump-time range (us)")
+        # Repumper frequency (MHz). Live f_pump_repumper ~ 202 MHz.
+        self.setattr_argument("f_repump_min_MHz", NumberValue(201.0, min=100.0, max=300.0, ndecimals=4, step=0.1), group="Repump-freq range (MHz)")
+        self.setattr_argument("f_repump_max_MHz", NumberValue(203.0, min=100.0, max=300.0, ndecimals=4, step=0.1), group="Repump-freq range (MHz)")
+        self.setattr_argument("f_repump_step_MHz", NumberValue(0.5, min=0.0001, max=50.0, ndecimals=4, step=0.1), group="Repump-freq range (MHz)")
+        # Repumper amplitude (raw 0-1). Live amp_pump_repumper_active ~ 0.4.
+        self.setattr_argument("amp_repump_min", NumberValue(0.3, min=0.0, max=1.0, ndecimals=3, step=0.01), group="Repump-amp range")
+        self.setattr_argument("amp_repump_max", NumberValue(0.5, min=0.0, max=1.0, ndecimals=3, step=0.01), group="Repump-amp range")
+        self.setattr_argument("amp_repump_step", NumberValue(0.05, min=0.001, max=1.0, ndecimals=3, step=0.01), group="Repump-amp range")
+        # D1-pump frequency (MHz). Live f_pump_D1 ~ 145 MHz.
+        self.setattr_argument("f_d1_min_MHz", NumberValue(143.0, min=50.0, max=300.0, ndecimals=4, step=0.1), group="D1-pump-freq range (MHz)")
+        self.setattr_argument("f_d1_max_MHz", NumberValue(147.0, min=50.0, max=300.0, ndecimals=4, step=0.1), group="D1-pump-freq range (MHz)")
+        self.setattr_argument("f_d1_step_MHz", NumberValue(0.5, min=0.0001, max=50.0, ndecimals=4, step=0.1), group="D1-pump-freq range (MHz)")
+        # D1-pump amplitude (raw 0-1). Live amp_pump_D1 ~ 0.03.
+        self.setattr_argument("amp_d1_min", NumberValue(0.01, min=0.0, max=1.0, ndecimals=3, step=0.005), group="D1-pump-amp range")
+        self.setattr_argument("amp_d1_max", NumberValue(0.06, min=0.0, max=1.0, ndecimals=3, step=0.005), group="D1-pump-amp range")
+        self.setattr_argument("amp_d1_step", NumberValue(0.005, min=0.001, max=1.0, ndecimals=3, step=0.005), group="D1-pump-amp range")
+
+        # --- Repetitions (each loop runs the full grid x 2 cfg). ---
+        self.setattr_argument("n_measurements", NumberValue(50, min=1, max=600000, ndecimals=0, step=1),
                               group="Experiment")
 
-        # All physics (f_mw_00, t_pi_00_mu, amp_mw_pulse, shim_*_qaxis,
-        # trap_ramp_*, nominal_trapdepth, atom_threshold, t_imaging_gate,
-        # t_optical_pump, the pump-beam params) load from datasets via
-        # BaseExperiment; the rebalancer is created there too.
+        # All physics (f_mw_00, t_pi_00_mu, amp_mw_pulse, shim_*, trap_ramp_*,
+        # atom_threshold, t_imaging_gate, the live pump-knob values) load from
+        # datasets via BaseExperiment; the rebalancer is created there.
 
     def prepare(self):
         self.base.prepare(feedback_profile="low_FORT")
 
-        # --- Build the pump-time scan list (us). Single point if min==max. ---
-        vt, st = float(self.t_pump_min_us), float(self.t_pump_step_us)
-        nt = (int(round((float(self.t_pump_max_us) - vt) / st)) + 1) if st > 0.0 else 1
-        if nt < 1:
-            nt = 1
-        self.pump_times_us = [vt + i * st for i in range(nt)]
+        # --- Build each scannable knob's value list (NATURAL units) ---
+        def _axis_list(vmin, vmax, vstep):
+            v, s = float(vmin), float(vstep)
+            n = (int(round((float(vmax) - v) / s)) + 1) if s > 0.0 else 1
+            return [v + i * s for i in range(max(n, 1))]
+
+        lists_nat = {
+            "t_optical_pump": _axis_list(self.t_pump_min_us, self.t_pump_max_us, self.t_pump_step_us),    # us
+            "f_pump_repumper": _axis_list(self.f_repump_min_MHz, self.f_repump_max_MHz, self.f_repump_step_MHz),  # MHz
+            "amp_pump_repumper_active": _axis_list(self.amp_repump_min, self.amp_repump_max, self.amp_repump_step),  # raw
+            "f_pump_D1": _axis_list(self.f_d1_min_MHz, self.f_d1_max_MHz, self.f_d1_step_MHz),             # MHz
+            "amp_pump_D1": _axis_list(self.amp_d1_min, self.amp_d1_max, self.amp_d1_step),                # raw
+        }
+        x_vals = lists_nat[self.axis_x]
+        y_vals = lists_nat[self.axis_y] if self.axis_y != "none" else [0.0]   # 0.0 sentinel -> 1-D
+
+        # Live (fixed) SI values used when a knob is NOT an axis.
+        live_si = {
+            "t_optical_pump": float(self.t_optical_pump),                     # seconds
+            "f_pump_repumper": float(self.f_pump_repumper),                   # Hz
+            "amp_pump_repumper_active": float(self.amp_pump_repumper_active),  # raw
+            "f_pump_D1": float(self.f_pump_D1),                               # Hz
+            "amp_pump_D1": float(self.amp_pump_D1),                           # raw
+        }
+
+        # natural unit -> SI (us->s, MHz->Hz; amps raw)
+        def _to_si(name, nat):
+            if name == "t_optical_pump":
+                return nat * 1e-6
+            if name in ("f_pump_repumper", "f_pump_D1"):
+                return nat * 1e6
+            return nat
+
+        # Flatten the X x Y grid into per-point kernel arg lists (branch-free kernel).
+        self.pt_list = []   # pump time, seconds
+        self.fr_list = []   # repump freq, Hz
+        self.ar_list = []   # repump amp, raw
+        self.fd_list = []   # D1 freq, Hz
+        self.ad_list = []   # D1 amp, raw
+        self.xv_list = []   # logged X value, natural unit
+        self.yv_list = []   # logged Y value, natural unit (0.0 if 1-D)
+        for xv in x_vals:
+            for yv in y_vals:
+                vals = dict(live_si)                     # start from live values
+                vals[self.axis_x] = _to_si(self.axis_x, xv)
+                if self.axis_y != "none":
+                    vals[self.axis_y] = _to_si(self.axis_y, yv)
+                self.pt_list.append(vals["t_optical_pump"])
+                self.fr_list.append(vals["f_pump_repumper"])
+                self.ar_list.append(vals["amp_pump_repumper_active"])
+                self.fd_list.append(vals["f_pump_D1"])
+                self.ad_list.append(vals["amp_pump_D1"])
+                self.xv_list.append(float(xv))
+                self.yv_list.append(float(yv))
+        n_grid = len(self.pt_list)
 
         # --- Fixed 00-pi probe (SI, like microwave_scan) ---
-        self._f00_hz = self.f_mw_00            # already Hz (SI) from BaseExperiment
-        self._t00_mu = int(self.t_pi_00_mu)    # pi duration in machine units
+        self._f00_hz = self.f_mw_00
+        self._t00_mu = int(self.t_pi_00_mu)
 
         # --- Self-describing snapshot ---
         snapshot_params = {
-            "t_pump_min_us": float(self.t_pump_min_us),
-            "t_pump_max_us": float(self.t_pump_max_us),
-            "t_pump_step_us": float(self.t_pump_step_us),
-            "t_optical_pump": self.t_optical_pump,   # live value (seconds) for reference
-            "f_mw_00": self.f_mw_00,
-            "t_pi_00_mu": self.t_pi_00_mu,
-            "amp_mw_pulse": self.amp_mw_pulse,
-            "shim_X_qaxis": self.shim_X_qaxis,
-            "shim_Y_qaxis": self.shim_Y_qaxis,
-            "shim_Z1_qaxis": self.shim_Z1_qaxis,
-            "shim_Z2_qaxis": self.shim_Z2_qaxis,
-            "shim_X_off": self.shim_X_off,
-            "shim_Y_off": self.shim_Y_off,
-            "shim_Z1_off": self.shim_Z1_off,
-            "shim_Z2_off": self.shim_Z2_off,
-            "trap_ramp_start_amp": self.trap_ramp_start_amp,
-            "trap_ramp_steps": self.trap_ramp_steps,
-            "trap_ramp_dt_us": self.trap_ramp_dt_us,
-            "nominal_trapdepth": self.nominal_trapdepth,
-            "atom_threshold": self.atom_threshold,
-            "t_imaging_gate": self.t_imaging_gate,
+            "axis_x": self.axis_x, "axis_y": self.axis_y,
+            "t_pump_min_us": float(self.t_pump_min_us), "t_pump_max_us": float(self.t_pump_max_us), "t_pump_step_us": float(self.t_pump_step_us),
+            "f_repump_min_MHz": float(self.f_repump_min_MHz), "f_repump_max_MHz": float(self.f_repump_max_MHz), "f_repump_step_MHz": float(self.f_repump_step_MHz),
+            "amp_repump_min": float(self.amp_repump_min), "amp_repump_max": float(self.amp_repump_max), "amp_repump_step": float(self.amp_repump_step),
+            "f_d1_min_MHz": float(self.f_d1_min_MHz), "f_d1_max_MHz": float(self.f_d1_max_MHz), "f_d1_step_MHz": float(self.f_d1_step_MHz),
+            "amp_d1_min": float(self.amp_d1_min), "amp_d1_max": float(self.amp_d1_max), "amp_d1_step": float(self.amp_d1_step),
+            # live values of the scannable knobs (for reference)
+            "t_optical_pump": self.t_optical_pump,
+            "f_pump_repumper": self.f_pump_repumper,
+            "amp_pump_repumper_active": self.amp_pump_repumper_active,
+            "f_pump_D1": self.f_pump_D1, "amp_pump_D1": self.amp_pump_D1,
+            # the other (fixed) pump-beam params, for self-description
+            "f_pump_excitation": self.f_pump_excitation, "amp_pump_excitation": self.amp_pump_excitation,
+            # probe + sequence params
+            "f_mw_00": self.f_mw_00, "t_pi_00_mu": self.t_pi_00_mu, "amp_mw_pulse": self.amp_mw_pulse,
+            "shim_X_qaxis": self.shim_X_qaxis, "shim_Y_qaxis": self.shim_Y_qaxis,
+            "shim_Z1_qaxis": self.shim_Z1_qaxis, "shim_Z2_qaxis": self.shim_Z2_qaxis,
+            "shim_X_off": self.shim_X_off, "shim_Y_off": self.shim_Y_off,
+            "shim_Z1_off": self.shim_Z1_off, "shim_Z2_off": self.shim_Z2_off,
+            "trap_ramp_start_amp": self.trap_ramp_start_amp, "trap_ramp_steps": self.trap_ramp_steps,
+            "trap_ramp_dt_us": self.trap_ramp_dt_us, "nominal_trapdepth": self.nominal_trapdepth,
+            "atom_threshold": self.atom_threshold, "t_imaging_gate": self.t_imaging_gate,
             "n_measurements": int(self.n_measurements),
         }
         for key, val in snapshot_params.items():
             self.set_dataset(f"snapshot_{key}", val, persist=True)
 
         # --- Result datasets (per point) ---
-        for k in ("op_t_pump_us", "op_apply_pi",
+        for k in ("op_axis_x_val", "op_axis_y_val", "op_apply_pi",
                   "op_bg_spcm1", "op_bg_spcm2",
                   "op_shot1_spcm1", "op_shot1_spcm2",
                   "op_shot2_spcm1", "op_shot2_spcm2",
@@ -129,19 +192,21 @@ class OpticalPumpScan(EnvExperiment):
         self.set_dataset("op_scan_complete", 0, broadcast=True)
 
         # --- Metadata ---
-        self.set_dataset("op_n_time_points", len(self.pump_times_us), persist=True, broadcast=True)
+        self.set_dataset("op_axis_x_name", self.axis_x, persist=True, broadcast=True)
+        self.set_dataset("op_axis_y_name", self.axis_y, persist=True, broadcast=True)
+        self.set_dataset("op_n_x_points", len(x_vals), persist=True, broadcast=True)
+        self.set_dataset("op_n_y_points", len(y_vals), persist=True, broadcast=True)
         self.set_dataset("op_n_loops", int(self.n_measurements), persist=True, broadcast=True)
-        self.set_dataset("op_best_t_pump_us", 0.0, persist=True, broadcast=True)
         self.set_dataset("op_best_signal", 0.0, persist=True, broadcast=True)
 
-        # Two configs (no-pi reference + pi) per pump time -> one full round =
-        # all pump times x both configs. Incremental HDF5 save once per round.
-        self._n_pts_per_round = max(len(self.pump_times_us) * 2, 1)
-
-        print(f"OpticalPumpScan: {len(self.pump_times_us)} pump-time pts x 2 cfg "
-              f"(no-pi/pi) x {int(self.n_measurements)} loops | "
-              f"t_pump={self.pump_times_us} us | live t_optical_pump = "
-              f"{self.t_optical_pump * 1e6:.2f} us")
+        self._n_pts_per_round = max(n_grid * 2, 1)
+        print(f"OpticalPumpScan(2D): X={self.axis_x} ({len(x_vals)}) x Y={self.axis_y} "
+              f"({len(y_vals)}) = {n_grid} grid pts x 2 cfg x {int(self.n_measurements)} loops "
+              f"= {n_grid * 2 * int(self.n_measurements)} shots")
+        print(f"  live knobs: t_optical_pump={self.t_optical_pump * 1e6:.1f} us, "
+              f"f_pump_repumper={self.f_pump_repumper / 1e6:.4f} MHz, "
+              f"amp_pump_repumper_active={self.amp_pump_repumper_active:.3f}, "
+              f"f_pump_D1={self.f_pump_D1 / 1e6:.4f} MHz, amp_pump_D1={self.amp_pump_D1:.3f}")
 
     @kernel
     def run(self):
@@ -154,10 +219,8 @@ class OpticalPumpScan(EnvExperiment):
             self.core.break_realtime()
             delay(100 * us)
 
-            for scan_idx in range(len(self.pump_times_us)):
-                t_pump_us = self.pump_times_us[scan_idx]
-
-                # Interleave the two MW configs back-to-back at each pump time:
+            for gi in range(len(self.pt_list)):
+                # Interleave the two MW configs back-to-back at each grid point:
                 #   cfg 0 = no-pi reference (matched dark-hold, MW blocked)
                 #   cfg 1 = apply the fixed 00 pi
                 for cfg in range(2):
@@ -195,16 +258,13 @@ class OpticalPumpScan(EnvExperiment):
                     ramp_trap_amp(self, self.trap_ramp_start_amp, trap_ramp_end_amp,
                                   self.trap_ramp_steps, self.trap_ramp_dt_us)
                     delay(1 * ms)
-                    optical_pumping_timed(self, t_pump_us * us)
+                    optical_pumping_timed(self, self.pt_list[gi], self.fr_list[gi], self.ar_list[gi],
+                                          self.fd_list[gi], self.ad_list[gi])
 
                     # === MW: fixed 00 pi (cfg 1) or matched dark-hold (cfg 0) ===
                     if apply_pi:
                         mw_pulse_00(self, self._f00_hz, self._t00_mu)
                     else:
-                        # Match the pi-branch timeline advance so the two configs
-                        # differ ONLY by whether the MW actually fires (MW stays
-                        # blocked). The few-us DDS-set difference is immaterial to
-                        # F=3/F=4 populations.
                         delay_mu(4100 + self._t00_mu)
 
                     # === Blowaway F=4 + trap ramp UP + final readout (shot2) ===
@@ -216,11 +276,11 @@ class OpticalPumpScan(EnvExperiment):
 
                     # === Save ===
                     delay(1 * ms)
-                    self._save_point(t_pump_us, cfg,
+                    self._save_point(gi, cfg,
                                      count1_bg, count2_bg,
                                      count1, count2,
                                      count1_post, count2_post,
-                                     scan_idx, loop)
+                                     loop)
 
                     # === Reset for next point ===
                     self.core.break_realtime()
@@ -234,13 +294,14 @@ class OpticalPumpScan(EnvExperiment):
     # =====================================================================
 
     @rpc
-    def _save_point(self, t_pump_us, apply_pi,
+    def _save_point(self, gi, apply_pi,
                     bg_s1, bg_s2, shot1_s1, shot1_s2,
-                    shot2_s1, shot2_s2, scan_idx, loop_idx):
-        """Append one point; threshold-based loaded/retained (same convention as
-        microwave_scan); incremental HDF5 save once per full (pump-time x cfg)
-        round."""
-        self.append_to_dataset("op_t_pump_us", t_pump_us)
+                    shot2_s1, shot2_s2, loop_idx):
+        """Append one point. The axis values are looked up host-side from gi (the
+        kernel passes only the grid index). loaded/retained thresholding matches
+        microwave_scan; incremental HDF5 save once per full (grid x cfg) round."""
+        self.append_to_dataset("op_axis_x_val", self.xv_list[gi])
+        self.append_to_dataset("op_axis_y_val", self.yv_list[gi])
         self.append_to_dataset("op_apply_pi", apply_pi)
         self.append_to_dataset("op_bg_spcm1", bg_s1)
         self.append_to_dataset("op_bg_spcm2", bg_s2)
@@ -277,52 +338,49 @@ class OpticalPumpScan(EnvExperiment):
 
     @rpc
     def _summarize(self):
-        """Per pump time: lost-fraction (1 - retention among loaded) for the pi
-        and no-pi configs, and the clean mF=0 signal = lost_pi - lost_noPi. The
-        signal SATURATES with pump time; the knee = the shortest sufficient pump
-        time. (Cheap table only -- the saturating fit + recommended t_98 is in
+        """Per (x, y) grid cell: lost-fraction (1 - retention among loaded) for the
+        pi and no-pi configs, and the clean mF=0 signal = lost_pi - lost_noPi. Best
+        cell = argmax signal. (Cheap table -- the heatmap is in
         analyze_optical_pump_scan.) BLAS-free (sums only)."""
-        ts = self.get_dataset("op_t_pump_us")
+        xs = self.get_dataset("op_axis_x_val")
+        ys = self.get_dataset("op_axis_y_val")
         pis = self.get_dataset("op_apply_pi")
         loaded = self.get_dataset("op_atom_loaded")
         retained = self.get_dataset("op_atom_retained")
-        if len(ts) == 0:
+        if len(xs) == 0:
             print("OpticalPumpScan: no data to summarize.")
             return
 
-        tab = {}        # (t_us, cfg) -> [n_retained, n_loaded]
-        for i in range(len(ts)):
+        tab = {}        # (x, y, cfg) -> [n_retained, n_loaded]
+        for i in range(len(xs)):
             if loaded[i] <= 0:
                 continue
-            key = (round(float(ts[i]), 2), int(pis[i]))
+            key = (round(float(xs[i]), 4), round(float(ys[i]), 4), int(pis[i]))
             tab.setdefault(key, [0, 0])
             tab[key][0] += int(retained[i])
             tab[key][1] += 1
 
-        times = sorted({k[0] for k in tab})
-        print("OpticalPumpScan: lost-fraction (1 - retention among loaded) per pump time:")
-        best_t = None
+        cells = sorted({(k[0], k[1]) for k in tab})
+        print(f"OpticalPumpScan(2D): lost_pi / lost_noPi / signal per "
+              f"({self.axis_x}, {self.axis_y}):")
+        best = None
         best_sig = -2.0
-        for t in times:
-            dpi = tab.get((t, 1))
-            dno = tab.get((t, 0))
-            lost_pi = (1.0 - dpi[0] / dpi[1]) if (dpi and dpi[1] > 0) else float("nan")
-            lost_no = (1.0 - dno[0] / dno[1]) if (dno and dno[1] > 0) else float("nan")
-            npi = dpi[1] if dpi else 0
-            nno = dno[1] if dno else 0
+        for (x, y) in cells:
+            dpi = tab.get((x, y, 1))
+            dno = tab.get((x, y, 0))
+            lpi = (1.0 - dpi[0] / dpi[1]) if (dpi and dpi[1] > 0) else float("nan")
+            lno = (1.0 - dno[0] / dno[1]) if (dno and dno[1] > 0) else float("nan")
             if dpi and dno and dpi[1] > 0 and dno[1] > 0:
-                sig = lost_pi - lost_no
+                sig = lpi - lno
             else:
                 sig = float("nan")
-            print(f"  t={t:9.2f} us  lost_pi={lost_pi:.3f} (n={npi})  "
-                  f"lost_noPi={lost_no:.3f} (n={nno})  signal={sig:.3f}")
+            print(f"  x={x:9.4g}  y={y:9.4g}  lost_pi={lpi:.3f}  lost_noPi={lno:.3f}  signal={sig:.3f}")
             if sig == sig and sig > best_sig:   # sig==sig screens NaN
                 best_sig = sig
-                best_t = t
+                best = (x, y)
 
-        if best_t is not None:
-            self.set_dataset("op_best_t_pump_us", float(best_t), persist=True, broadcast=True)
+        if best is not None:
             self.set_dataset("op_best_signal", float(best_sig), persist=True, broadcast=True)
-            print(f"OpticalPumpScan: max mF=0 signal = {best_sig:.3f} at t_pump = "
-                  f"{best_t:g} us (highest signal != necessarily the knee; see "
-                  f"analyze_optical_pump_scan for the saturating fit + recommended t_98).")
+            print(f"OpticalPumpScan(2D): max mF=0 signal = {best_sig:.3f} at "
+                  f"({self.axis_x}={best[0]:g}, {self.axis_y}={best[1]:g}). "
+                  f"See analyze_optical_pump_scan for the heatmap.")
