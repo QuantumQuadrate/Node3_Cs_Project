@@ -74,7 +74,7 @@ from utilities.base_experiment import BaseExperiment
 from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
     background_measurement_dual, load_atom_deterministic,
-    imaging_pgc, beams_off_for_imaging, spcm_image_dual,
+    imaging_pgc, beams_off_for_imaging, spcm_image_dual, mw_pulse_00,
     optical_pumping_F3, set_qaxis, optical_pumping_timed, ramp_trap_amp,
     blowaway_f4, final_state_readout, reset_mw_scan,
 )
@@ -165,6 +165,8 @@ class OpticalPumpResoScan(EnvExperiment):
             "nominal_trapdepth": self.nominal_trapdepth,
             "atom_threshold": self.atom_threshold,
         }
+        self._f00_hz = self.f_mw_00
+        self._t00_mu = int(self.t_pi_00_mu)
         for key, val in snapshot_params.items():
             self.set_dataset("snapshot_{}".format(key), val, persist=True)
 
@@ -284,7 +286,7 @@ class OpticalPumpResoScan(EnvExperiment):
                 # is 0 for the measurement, so F=4 accumulates on resonance.
                 optical_pumping_timed(self, self._t_pump_s, self._f_repump_hz,
                                       self._amp_repump, f_op, self._amp_d1)
-
+                mw_pulse_00(self, self._f00_hz, self._t00_mu)
                 # === Blowaway F=4 + trap ramp UP + final readout (shot2) ===
                 blowaway_f4(self, amp2)
                 ramp_trap_amp(self, trap_ramp_end_amp, self.trap_ramp_start_amp,
