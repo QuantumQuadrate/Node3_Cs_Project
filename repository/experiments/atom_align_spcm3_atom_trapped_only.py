@@ -185,7 +185,7 @@ class AtomAlignSPCM3_Only_Atom_trapped(EnvExperiment):
             while c0 > int(self.readout_threshold):
                 count1_r, count2_r, count3_r = self._image_triple(self.t_readout_monitor)
                 # count1_r, count2_r, count3_r = self._image_triple(20 * ms)
-                c0 = count2_r
+                c0 = count1_r
                 if c0 > int(self.readout_threshold):
                     self._push(count1_r, count2_r, count3_r)
                 

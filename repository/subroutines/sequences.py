@@ -66,6 +66,7 @@ def imaging_pgc(exp):
     exp.dds_cooling_DP.sw.on()
     delay(exp.t_PGC_after_img)
 
+
 @kernel
 def imaging_pgc_low_trap(exp):
     """Short PGC before SPCM readout."""
@@ -911,9 +912,16 @@ def load_atom(exp):
 
 
 @kernel
-def load_atom_deterministic(exp):
+def load_atom_deterministic(exp, t_mot_formation=70.0 * ms):
     """Deterministic atom loader v2: MOT load -> compress -> image+poll
     -> PGC on captured atom.
+
+    t_mot_formation (seconds, default 70 ms) sets the Phase-A MOT formation
+    wait. The default reproduces the historical hardcoded 70 ms, so every
+    existing caller is unchanged; only the loading-time test passes a value
+    to scan it. It is deliberately NOT bound to exp.t_MOT2PGC: that shared
+    dataset is 400 ms and is used by the non-deterministic load_atom, so
+    binding here would silently 4x the MOT time for every deterministic caller.
 
     Adapted from Node-1's `load_MOT_and_FORT_until_atom`
     (archive/Node1_Experiment/experiment_functions_NODE1.py:638-817) but
@@ -1003,9 +1011,9 @@ def load_atom_deterministic(exp):
     exp.dds_FORT.sw.on()
     delay(100 * us)
 
-    # MOT formation
-    # delay(exp.t_MOT2PGC)
-    delay(100 *ms)
+    # MOT formation (default 100 ms; overridable via the t_mot_formation arg to
+    # scan loading-time vs MOT duration -- see signature docstring).
+    delay(t_mot_formation)
 
     # =========================================================
     #  Phase B1: MOT compression
@@ -1163,7 +1171,7 @@ def load_atom_deterministic(exp):
             counts_first_unloaded, t_load)
 
 @kernel
-def load_atom_deterministic_spcm3(exp):
+def load_atom_deterministic_spcm3(exp, t_mot_formation=70.0 * ms):
     """Deterministic atom loader (SPCM3 variant): MOT load -> compress ->
     image+poll on SPCM3 -> PGC on captured atom.
 
@@ -1262,9 +1270,9 @@ def load_atom_deterministic_spcm3(exp):
     exp.dds_FORT.sw.on()
     delay(100 * us)
 
-    # MOT formation
-    # delay(exp.t_MOT2PGC)
-    delay(100 *ms)
+    # MOT formation (default 100 ms; overridable via the t_mot_formation arg to
+    # scan loading-time vs MOT duration -- see signature docstring).
+    delay(t_mot_formation)
 
     # =========================================================
     #  Phase B1: MOT compression
@@ -1402,7 +1410,7 @@ def load_atom_deterministic_spcm3(exp):
     delay(1 * us)
     exp.dds_cooling_DP.sw.on()
     delay(exp.t_PGC_after_img)
-
+ 
     # End PGC: cooling off, repump off, RF blocked. MOT_X/Y/Z stay on
     # (load_atom contract) so the caller's confirmation imaging shot
     # has light reaching the atom.
