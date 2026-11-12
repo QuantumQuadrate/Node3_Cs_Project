@@ -13,11 +13,30 @@ Sequence per shot (one modulation frequency):
     background window           (FORT off, no atom)        -> bg1, bg2
     load_atom_deterministic     (waits until an atom is caught)
     PGC -> image 1 -> PGC       (confirm + recool)         -> shot1
+    [low-trap option] adiabatic ramp DOWN to low_trap_amp
     MODULATE the trap for t_mod at f_mod
+    [low-trap option] adiabatic ramp back UP to nominal_trapdepth
     PGC -> image 2 -> PGC       (survival + recool)        -> shot2
     save one row
 The frequency is scanned in the inner loop and the whole scan repeated num_runs
 times, so slow drifts average over the scan instead of tilting it.
+
+LOW-TRAP OPTION (modulate_at_low_trap). Measures the trap frequencies of the
+SCIENCE trap -- the depth Rate_measurement / parity / release_recapture's
+low-trap mode run in -- instead of the loading trap. Imaging stays at the
+loading depth; only the modulation happens low. ONE amplitude, low_trap_amp, is
+the ramp target, the centre of the RAM sine table and the value the modulation
+exits to, so the RAM entry/exit stay glitch-free exactly as at the loading
+depth. It is a fixed front-panel value, NOT the feedback's amp3: amp3 is only
+known at run time, and centring the table on it would mean rewriting the RAM
+(trap off) after every feedback. Instead the feedback runs on the low_FORT
+profile in this mode and its amp3 is LOGGED every shot (ph_feedback_amp3), so
+the analysis can check that low_trap_amp matched the feedback-locked low trap.
+Default 0.0946 = mean amp3 over RID 3757's low-trap releases. The trap
+frequency scales with the amplitude (f ~ sqrt(P), P ~ amp^2 for a weakly
+driven AOM), so a 1 % amplitude mismatch is ~1 % in f.
+Expected at the low trap (from the loading-trap 2f_x / 2f_y / 2f_z = 93.4 /
+107.8 / 14.9 kHz and a ~0.27 power ratio): 2f_x ~ 49, 2f_y ~ 56, 2f_z ~ 7.7 kHz.
 
 =============================================================================
 HOW THE MODULATION IS GENERATED (AD9910 RAM)
@@ -68,9 +87,10 @@ CALIBRATION / HONEST CAVEATS -- read before trusting a number
   NOT exactly what you asked for: `ph_f_mod_actual` is what was played and is
   what the analysis must plot against. Same for `ph_t_mod_actual`.
 * The table is centred on `nominal_trapdepth`, which is what
-  load_atom_deterministic programs the FORT to. If the trap amplitude is changed
-  elsewhere (ramping, a different loader), the centre must be changed to match or
-  the modulation will be offset.
+  load_atom_deterministic programs the FORT to -- or on `low_trap_amp` with the
+  low-trap option, which ramps the FORT to that same value first. If the trap
+  amplitude is changed elsewhere (a different loader), the centre must be changed
+  to match or the modulation will be offset.
 * RAM mode is entered only for the modulation window and explicitly left before
   any shared subroutine touches dds_FORT again. This matters because the default
   phase_mode is CONTINUOUS, so ARTIQ's `set()` does NOT clear CFR1 -- a stale
@@ -93,6 +113,9 @@ Datasets (one row per shot, appended, never truncated):
     ph_shot2_spcm1 / ph_shot2_spcm2  image 2 (after modulation)
     ph_loaded / ph_survived          0/1 against atom_threshold
     ph_loop_index                    which repeat of the scan
+    ph_feedback_amp3                 latest feedback amp3 (low-trap amplitude
+                                     under the low_FORT profile; reference only)
+    ph_modulate_at_low_trap          scalar 0/1: where the modulation happened
 To analyse: group the rows by ph_f_mod_actual (NOT ph_f_mod_set) and plot
 survived/loaded per frequency with a binomial error bar; the dip centre is
 2 x f_trap. No analysis module is written for this yet.
@@ -112,6 +135,7 @@ from subroutines.sequences import (
     prepare_for_feedback, restore_after_feedback,
     background_measurement_dual, load_atom_deterministic,
     imaging_pgc, spcm_image_dual, beams_off_for_imaging,
+    ramp_trap_amp,
 )
 from utilities.write_results import write_results
 
@@ -226,13 +250,38 @@ class ParametricHeating(EnvExperiment):
         self.setattr_argument(
             "include_zero_point", BooleanValue(True), group="Modulation")
 
+        # --- Low-trap option (see module docstring) ---
+        self.setattr_argument(
+            "modulate_at_low_trap", BooleanValue(False), group="Low trap")
+        # FORT DDS amplitude of the low trap: ramp target AND table centre.
+        # Default = mean feedback amp3 over RID 3757's low-trap releases.
+        self.setattr_argument(
+            "low_trap_amp",
+            NumberValue(0.0946, min=0.0, max=0.3, step=0.001, ndecimals=4),
+            group="Low trap")
+        # Same adiabatic ramp as Rate_measurement / release_recapture (declared
+        # after base.build(), so they shadow the same-named datasets).
+        self.setattr_argument(
+            "trap_ramp_steps",
+            NumberValue(200, min=0, max=100000, ndecimals=0),
+            group="Low trap")
+        self.setattr_argument(
+            "trap_ramp_dt_us",
+            NumberValue(50, min=0.001, max=1000, ndecimals=3),
+            group="Low trap")
+
     # =====================================================================
     #  HOST SETUP
     # =====================================================================
     def prepare(self):
         # Shims, gates, thresholds, f_FORT, nominal_trapdepth: all from
-        # ExperimentVariables. No overrides.
-        self.base.prepare()
+        # ExperimentVariables. No overrides. In low-trap mode the feedback runs
+        # on the low_FORT profile (as Rate_measurement does), so its amp3 is the
+        # feedback-locked low-trap amplitude that gets logged for comparison.
+        if self.modulate_at_low_trap:
+            self.base.prepare(feedback_profile="low_FORT")
+        else:
+            self.base.prepare()
 
         spp = int(self.samples_per_period)
         self.k_periods = RAM_N // spp               # whole periods in the table
@@ -241,10 +290,13 @@ class ParametricHeating(EnvExperiment):
         # Read from the device so this follows the real clock chain.
         self.t_dds = 4.0 / float(self.dds_FORT.sysclk)
 
-        # The trap amplitude the modulation is centred on. This is what
-        # load_atom_deterministic programs the FORT to, so it is also what the
-        # atom is held in when modulation starts.
-        self.center_amp = float(self.nominal_trapdepth)
+        # The trap amplitude the modulation is centred on = the amplitude the
+        # atom is held in when modulation starts: what load_atom_deterministic
+        # programs the FORT to, or the low-trap amplitude the option ramps to.
+        if self.modulate_at_low_trap:
+            self.center_amp = float(self.low_trap_amp)
+        else:
+            self.center_amp = float(self.nominal_trapdepth)
 
         # --- frequency list -> achievable (step, f_actual, t_mod_actual) ---
         f_list = []
@@ -317,6 +369,13 @@ class ParametricHeating(EnvExperiment):
 
         # --- report the realised scan, so the quantisation is visible up front
         print("Parametric heating: %d points x %d runs" % (self.n_points, int(self.num_runs)))
+        if self.modulate_at_low_trap:
+            print("  LOW-TRAP mode: ramp %.4f -> %.4f (%d steps x %g us), modulate, ramp back"
+                  % (float(self.nominal_trapdepth), self.center_amp,
+                     int(self.trap_ramp_steps), float(self.trap_ramp_dt_us)))
+        else:
+            print("  loading-trap mode: modulation centred on nominal_trapdepth %.4f"
+                  % self.center_amp)
         print("  table %d words, %d periods (%d samples/period), t_DDS %.2f ns"
               % (RAM_N, self.k_periods, spp, 1e9 * self.t_dds))
         print("  centre amplitude %.4f (asf %d), modulation asf %d..%d"
@@ -335,8 +394,10 @@ class ParametricHeating(EnvExperiment):
                     "ph_bg1", "ph_bg2",
                     "ph_shot1_spcm1", "ph_shot1_spcm2",
                     "ph_shot2_spcm1", "ph_shot2_spcm2",
-                    "ph_loaded", "ph_survived", "ph_loop_index"):
+                    "ph_loaded", "ph_survived", "ph_loop_index",
+                    "ph_feedback_amp3"):
             self.set_dataset(key, [], broadcast=True)
+        self.set_dataset("ph_modulate_at_low_trap", int(bool(self.modulate_at_low_trap)))
         self.set_dataset("ph_n_shots", 0, broadcast=True)
         self.set_dataset("ph_survival_live", 0.0, broadcast=True)
         self.set_dataset("measurement_progress", 0, broadcast=True)
@@ -472,6 +533,7 @@ class ParametricHeating(EnvExperiment):
         self.core.break_realtime()
 
         n_shot = 0
+        fb_amp3 = 0.0          # latest feedback amp3, logged per shot (reference)
         for loop in range(int(self.num_runs)):
             for ip in range(self.n_points):
                 self.core.break_realtime()
@@ -480,6 +542,7 @@ class ParametricHeating(EnvExperiment):
                 if n_shot % int(self.feedback_every_n) == 0:
                     prepare_for_feedback(self)
                     amp0, amp1, amp2, amp3, amp4 = self.rebalancer.rebalance()
+                    fb_amp3 = amp3
                     restore_after_feedback(self)
                     self.core.break_realtime()
 
@@ -497,12 +560,26 @@ class ParametricHeating(EnvExperiment):
 
                 # --- modulate the trap (atom in the dark) ---
                 delay(100 * us)                       # let the beams settle
+                if self.modulate_at_low_trap:
+                    # Down to the low trap; the table is centred on this same
+                    # amplitude, so the RAM entry is continuous.
+                    ramp_trap_amp(self, self.nominal_trapdepth, self.low_trap_amp,
+                                  self.trap_ramp_steps, self.trap_ramp_dt_us)
+                    delay(1 * ms)
                 step = self.step_list[ip]
                 t_mod_mu = self.core.seconds_to_mu(self.t_mod_list[ip])
                 if step > 0:
                     self._modulate(step, t_mod_mu, ftw_fort, asf_center)
                 else:
                     delay_mu(t_mod_mu)                # 0 Hz control: steady trap
+                if self.modulate_at_low_trap:
+                    # RAM mode is already off (the _modulate exit latched the
+                    # single-tone profile at low_trap_amp), so the ramp's
+                    # dds_FORT.set() calls are ordinary single-tone writes.
+                    delay(1 * ms)
+                    ramp_trap_amp(self, self.low_trap_amp, self.nominal_trapdepth,
+                                  self.trap_ramp_steps, self.trap_ramp_dt_us)
+                    delay(1 * ms)
 
                 # --- image again: did it survive? ---
                 imaging_pgc(self)
@@ -513,7 +590,8 @@ class ParametricHeating(EnvExperiment):
                 survived = (s1b + s2b - bg1 - bg2) > self.atom_threshold
 
                 self._save_point(ip, bg1, bg2, s1a, s2a, s1b, s2b,
-                                 1 if loaded else 0, 1 if survived else 0, loop)
+                                 1 if loaded else 0, 1 if survived else 0, loop,
+                                 fb_amp3)
                 n_shot += 1
 
             self.set_dataset("measurement_progress", loop, broadcast=True)
@@ -525,7 +603,7 @@ class ParametricHeating(EnvExperiment):
     # =====================================================================
     @rpc
     def _save_point(self, ip, bg1, bg2, s1a, s2a, s1b, s2b,
-                    loaded, survived, loop):
+                    loaded, survived, loop, fb_amp3):
         """Append one shot. Logs the PLAYED frequency and time, not the request.
 
         Survival is only meaningful on shots that actually loaded, so
@@ -548,6 +626,7 @@ class ParametricHeating(EnvExperiment):
         self.append_to_dataset("ph_loaded", loaded)
         self.append_to_dataset("ph_survived", survived)
         self.append_to_dataset("ph_loop_index", loop)
+        self.append_to_dataset("ph_feedback_amp3", fb_amp3)
 
         self._n += 1
         if loaded:

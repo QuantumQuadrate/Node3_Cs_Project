@@ -185,8 +185,9 @@ class AtomAlignSPCM3Only(EnvExperiment):
         self.ttl_repump_switch.off()
         delay(1 * us)
 
-        self.ttl2_counter.gate_rising(gate_time)
-        count3 = self.ttl2_counter.fetch_count()
+        t_end = self.ttl2.gate_rising(gate_time)
+        count3 = self.ttl2.count(t_end)
+
         delay(1 * ms)          # rebuild RTIO slack after the blocking read
 
         return count3
